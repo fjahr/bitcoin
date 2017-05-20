@@ -191,6 +191,40 @@ public:
     }
 };
 
+/** A writer stream that computes a SHA256 hash. */
+class SHA256Writer
+{
+private:
+    CSHA256 ctx;
+
+    const int m_type;
+    const int m_version;
+
+public:
+
+    SHA256Writer(int type, int version) : m_type(type), m_version(version) {}
+
+    int GetType() const { return m_type; }
+    int GetVersion() const { return m_version; }
+
+    void write(const char *pch, size_t size) {
+        ctx.Write((const unsigned char*)pch, size);
+    }
+
+    uint256 GetHash() {
+        uint256 result;
+        ctx.Finalize((unsigned char*)&result);
+        return result;
+    }
+
+    template<typename T>
+    SHA256Writer& operator<<(const T& obj) {
+        // Serialize to this stream
+        ::Serialize(*this, obj);
+        return (*this);
+    }
+};
+
 /** Compute the 256-bit hash of an object's serialization. */
 template<typename T>
 uint256 SerializeHash(const T& obj, int nType=SER_GETHASH, int nVersion=PROTOCOL_VERSION)
