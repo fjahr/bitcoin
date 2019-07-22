@@ -963,7 +963,7 @@ static bool GetUTXOStats(CCoinsView *view, CCoinsStats &stats)
     unsigned char data[384];
     acc.Finalize(data);
     TruncatedSHA512Writer ss(SER_DISK, 0);
-    ss << FLATDATA(data);
+    ss << data;
     stats.muhash = ss.GetHash();
     stats.nDiskSize = view->EstimateSize();
     return true;
@@ -1052,16 +1052,16 @@ static UniValue gettxoutsetinfo(const JSONRPCRequest& request)
     UniValue ret(UniValue::VOBJ);
 
     CCoinsStats stats;
-    FlushStateToDisk();
-    if (GetUTXOStats(pcoinsdbview, stats)) {
-        ret.push_back(Pair("height", (int64_t)stats.nHeight));
-        ret.push_back(Pair("bestblock", stats.hashBlock.GetHex()));
-        ret.push_back(Pair("transactions", (int64_t)stats.nTransactions));
-        ret.push_back(Pair("txouts", (int64_t)stats.nTransactionOutputs));
-        ret.push_back(Pair("bogosize", (int64_t)stats.nBogoSize));
-        ret.push_back(Pair("muhash", stats.muhash.GetHex()));
-        ret.push_back(Pair("disk_size", stats.nDiskSize));
-        ret.push_back(Pair("total_amount", ValueFromAmount(stats.nTotalAmount)));
+    ::ChainstateActive().ForceFlushStateToDisk();
+    if (GetUTXOStats(pcoinsdbview.get(), stats)) {
+        ret.pushKV("height", (int64_t)stats.nHeight);
+        ret.pushKV("bestblock", stats.hashBlock.GetHex());
+        ret.pushKV("transactions", (int64_t)stats.nTransactions);
+        ret.pushKV("txouts", (int64_t)stats.nTransactionOutputs);
+        ret.pushKV("bogosize", (int64_t)stats.nBogoSize);
+        ret.pushKV("muhash", stats.muhash.GetHex());
+        ret.pushKV("disk_size", stats.nDiskSize);
+        ret.pushKV("total_amount", ValueFromAmount(stats.nTotalAmount));
     } else {
         throw JSONRPCError(RPC_INTERNAL_ERROR, "Unable to read UTXO set");
     }

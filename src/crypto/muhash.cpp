@@ -286,7 +286,7 @@ MuHash3072::MuHash3072() noexcept
 MuHash3072::MuHash3072(const unsigned char* key32) noexcept
 {
     unsigned char tmp[384];
-    ChaCha20(key32, 32).Output(tmp, 384);
+    ChaCha20(key32, 32).Keystream(tmp, 384);
     for (int i = 0; i < Num3072::LIMBS; ++i) {
         if (sizeof(Num3072::limb_type) == 4) {
             data.limbs[i] = ReadLE32(tmp + 4 * i);

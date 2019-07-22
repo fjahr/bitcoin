@@ -98,11 +98,10 @@ static void MuHash(benchmark::State& state)
     FastRandomContext rng(true);
     MuHash3072 acc;
     unsigned char key[32] = {0};
+    int i = 0;
     while (state.KeepRunning()) {
-        for (int i = 0; i < 1000; i++) {
-            key[0] = i;
-            acc *= MuHash3072(key);
-        }
+        key[0] = ++i;
+        acc *= MuHash3072(key);
     }
 }
 
@@ -117,4 +116,4 @@ BENCHMARK(SHA256D64_1024, 7400);
 BENCHMARK(FastRandom_32bit, 110 * 1000 * 1000);
 BENCHMARK(FastRandom_1bit, 440 * 1000 * 1000);
 
-BENCHMARK(MuHash);
+BENCHMARK(MuHash, 5000);

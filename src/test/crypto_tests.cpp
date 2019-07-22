@@ -637,7 +637,7 @@ BOOST_AUTO_TEST_CASE(muhash_tests)
         unsigned char res[384];
         int table[4];
         for (int i = 0; i < 4; ++i) {
-            table[i] = insecure_rand_ctx.randbits(3);
+            table[i] = g_insecure_rand_ctx.randbits(3);
         }
         for (int order = 0; order < 4; ++order) {
             MuHash3072 acc;
@@ -657,8 +657,8 @@ BOOST_AUTO_TEST_CASE(muhash_tests)
             }
         }
 
-        MuHash3072 x = FromInt(insecure_rand_ctx.randbits(4)); // x=X
-        MuHash3072 y = FromInt(insecure_rand_ctx.randbits(4)); // x=X, y=Y
+        MuHash3072 x = FromInt(g_insecure_rand_ctx.randbits(4)); // x=X
+        MuHash3072 y = FromInt(g_insecure_rand_ctx.randbits(4)); // x=X, y=Y
         MuHash3072 z; // x=X, y=Y, z=1
         z *= x; // x=X, y=Y, z=X
         z /= y; // x=X, y=Y, z=X/Y
@@ -674,7 +674,7 @@ BOOST_AUTO_TEST_CASE(muhash_tests)
     acc *= FromInt(1);
     acc /= FromInt(2);
     acc.Finalize(out);
-    uint256 x = (TruncatedSHA512Writer(SER_DISK, 0) << FLATDATA(out)).GetHash();
+    uint256 x = (TruncatedSHA512Writer(SER_DISK, 0) << out).GetHash();
     BOOST_CHECK(x == uint256S("0e94c56c180f27fd6b182f091c5b007e2d6eba5ae28daa5aa92d2af8c26ea9a6"));
 }
 
