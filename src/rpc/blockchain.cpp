@@ -11,6 +11,7 @@
 #include <chainparams.h>
 #include <coins.h>
 #include <consensus/validation.h>
+#include <secp256k1_multiset.h>
 #include <core_io.h>
 #include <hash.h>
 #include <index/blockfilterindex.h>
@@ -25,6 +26,7 @@
 #include <sync.h>
 #include <txdb.h>
 #include <txmempool.h>
+#include <uint256.h>
 #include <undo.h>
 #include <util/strencodings.h>
 #include <util/system.h>
@@ -54,6 +56,7 @@ struct CUpdatedBlock
 static Mutex cs_blockchange;
 static std::condition_variable cond_blockchange;
 static CUpdatedBlock latestblock;
+static secp256k1_context* context = nullptr;
 
 /* Calculate the difficulty for a given block index.
  */
@@ -914,34 +917,35 @@ struct CCoinsStats
     uint64_t nTransactions;
     uint64_t nTransactionOutputs;
     uint64_t nBogoSize;
-    uint256 hashSerialized;
+    uint256 multiset_hash;
     uint64_t nDiskSize;
     CAmount nTotalAmount;
 
     CCoinsStats() : nHeight(0), nTransactions(0), nTransactionOutputs(0), nBogoSize(0), nDiskSize(0), nTotalAmount(0) {}
 };
 
-static void ApplyStats(CCoinsStats &stats, CHashWriter& ss, const uint256& hash, const std::map<uint32_t, Coin>& outputs)
+static void ApplyStats(CCoinsStats &stats, secp256k1_multiset& acc, const uint256& hash, const std::map<uint32_t, Coin>& outputs)
 {
     assert(!outputs.empty());
-    ss << hash;
-    ss << VARINT(outputs.begin()->second.nHeight * 2 + outputs.begin()->second.fCoinBase ? 1u : 0u);
     stats.nTransactions++;
     for (const auto& output : outputs) {
-        ss << VARINT(output.first + 1);
-        ss << output.second.out.scriptPubKey;
-        ss << VARINT(output.second.out.nValue, VarIntMode::NONNEGATIVE_SIGNED);
+        TruncatedSHA512Writer ss(SER_DISK, 0);
+        ss << COutPoint(hash, output.first);
+        ss << (uint32_t)(output.second.nHeight * 2 + output.second.fCoinBase);
+        ss << output.second.out;
+        secp256k1_multiset_add(context, &acc, ss.GetHash().begin(), 32);
+
         stats.nTransactionOutputs++;
         stats.nTotalAmount += output.second.out.nValue;
         stats.nBogoSize += 32 /* txid */ + 4 /* vout index */ + 4 /* height + coinbase */ + 8 /* amount */ +
                            2 /* scriptPubKey len */ + output.second.out.scriptPubKey.size() /* scriptPubKey */;
     }
-    ss << VARINT(0u);
 }
 
 //! Calculate statistics about the unspent transaction output set
 static bool GetUTXOStats(CCoinsView *view, CCoinsStats &stats)
 {
+    context = secp256k1_context_create(SECP256K1_CONTEXT_NONE);
     std::unique_ptr<CCoinsViewCursor> pcursor(view->Cursor());
     assert(pcursor);
 
@@ -951,16 +955,19 @@ static bool GetUTXOStats(CCoinsView *view, CCoinsStats &stats)
         LOCK(cs_main);
         stats.nHeight = LookupBlockIndex(stats.hashBlock)->nHeight;
     }
-    ss << stats.hashBlock;
+
+    secp256k1_multiset acc;
+    secp256k1_multiset_init(context, &acc);
     uint256 prevkey;
     std::map<uint32_t, Coin> outputs;
+
     while (pcursor->Valid()) {
         boost::this_thread::interruption_point();
         COutPoint key;
         Coin coin;
         if (pcursor->GetKey(key) && pcursor->GetValue(coin)) {
             if (!outputs.empty() && key.hash != prevkey) {
-                ApplyStats(stats, ss, prevkey, outputs);
+                ApplyStats(stats, acc, prevkey, outputs);
                 outputs.clear();
             }
             prevkey = key.hash;
@@ -971,9 +978,11 @@ static bool GetUTXOStats(CCoinsView *view, CCoinsStats &stats)
         pcursor->Next();
     }
     if (!outputs.empty()) {
-        ApplyStats(stats, ss, prevkey, outputs);
+        ApplyStats(stats, acc, prevkey, outputs);
     }
-    stats.hashSerialized = ss.GetHash();
+    std::vector<unsigned char> vbuf = std::vector<unsigned char>(32,0);
+    secp256k1_multiset_finalize(context, vbuf.data(), &acc);
+    stats.multiset_hash = uint256(vbuf);
     stats.nDiskSize = view->EstimateSize();
     return true;
 }
@@ -1068,7 +1077,7 @@ static UniValue gettxoutsetinfo(const JSONRPCRequest& request)
         ret.pushKV("transactions", (int64_t)stats.nTransactions);
         ret.pushKV("txouts", (int64_t)stats.nTransactionOutputs);
         ret.pushKV("bogosize", (int64_t)stats.nBogoSize);
-        ret.pushKV("hash_serialized_2", stats.hashSerialized.GetHex());
+        ret.pushKV("multiset_hash", stats.multiset_hash.GetHex());
         ret.pushKV("disk_size", stats.nDiskSize);
         ret.pushKV("total_amount", ValueFromAmount(stats.nTotalAmount));
     } else {
