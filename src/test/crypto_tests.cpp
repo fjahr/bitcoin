@@ -9,6 +9,7 @@
 #include <crypto/hkdf_sha256_32.h>
 #include <crypto/hmac_sha256.h>
 #include <crypto/hmac_sha512.h>
+#include <crypto/lthash.h>
 #include <crypto/ripemd160.h>
 #include <crypto/sha1.h>
 #include <crypto/sha256.h>
@@ -731,6 +732,71 @@ BOOST_AUTO_TEST_CASE(countbits_tests)
             }
         }
     }
+}
+
+static LtHash FromInt(unsigned char i) {
+    unsigned char tmp[32] = {i, 0};
+    return LtHash(tmp);
+}
+
+BOOST_AUTO_TEST_CASE(lthash_tests)
+{
+    unsigned char out[2048];
+
+    LtHash a;
+    unsigned char aout[2048];
+    std::fill(std::begin(aout), std::end(aout), 0);
+    a.Finalize(aout);
+    LtHash b;
+    unsigned char bout[2048];
+    b.Finalize(bout);
+    for (int i = 0; i < 2048; ++i) {
+        BOOST_CHECK_EQUAL(aout[i], 0);
+    }
+
+    for (int iter = 0; iter < 10; ++iter) {
+        unsigned char res[2048];
+        int table[4];
+        for (int i = 0; i < 4; ++i) {
+            table[i] = g_insecure_rand_ctx.randbits(3);
+        }
+        for (int order = 0; order < 4; ++order) {
+            LtHash acc;
+            for (int i = 0; i < 4; ++i) {
+                int t = table[i ^ order];
+                if (t & 4) {
+                    acc.remove(FromInt(t & 3));
+                } else {
+                    acc.add(FromInt(t & 3));
+                }
+            }
+            acc.Finalize(out);
+            if (order == 0) {
+                memcpy(res, out, 2048);
+            } else {
+                BOOST_CHECK(memcmp(res, out, 2048) == 0);
+            }
+        }
+
+        LtHash x = FromInt(g_insecure_rand_ctx.randbits(4)); // x=X
+        LtHash y = FromInt(g_insecure_rand_ctx.randbits(4)); // x=X, y=Y
+        LtHash z;    // x=X, y=Y, z=1
+        z.add(x);    // x=X, y=Y, z=X
+        z.remove(y); // x=X, y=Y, z=X/Y
+        y.remove(x); // x=X, y=Y/X, z=X/Y
+        z.add(y);    // x=X, y=Y/X, z=1
+        z.Finalize(out);
+        for (int i = 0; i < 2048; ++i) {
+            BOOST_CHECK_EQUAL(out[i], 0);
+        }
+    }
+
+    LtHash acc = FromInt(0);
+    acc.add(FromInt(1));
+    acc.remove(FromInt(2));
+    acc.Finalize(out);
+    uint256 x = (TruncatedSHA512Writer(SER_DISK, 0) << out).GetHash();
+    BOOST_CHECK(x == uint256S("9647a5302095bb7d0a7c95700f7eff5cf232ec88eeaccbe32ecdd37dd660ca47"));
 }
 
 BOOST_AUTO_TEST_CASE(sha256d64)
