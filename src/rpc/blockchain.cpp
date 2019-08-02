@@ -12,6 +12,7 @@
 #include <coins.h>
 #include <consensus/validation.h>
 #include <core_io.h>
+#include <crypto/lthash.h>
 #include <hash.h>
 #include <index/blockfilterindex.h>
 #include <policy/feerate.h>
@@ -916,29 +917,28 @@ struct CCoinsStats
     uint64_t nTransactions;
     uint64_t nTransactionOutputs;
     uint64_t nBogoSize;
-    uint256 hashSerialized;
+    uint256 lthash;
     uint64_t nDiskSize;
     CAmount nTotalAmount;
 
     CCoinsStats() : nHeight(0), nTransactions(0), nTransactionOutputs(0), nBogoSize(0), nDiskSize(0), nTotalAmount(0) {}
 };
 
-static void ApplyStats(CCoinsStats &stats, CHashWriter& ss, const uint256& hash, const std::map<uint32_t, Coin>& outputs)
+static void ApplyStats(CCoinsStats &stats, LtHash& acc, const uint256& hash, const std::map<uint32_t, Coin>& outputs)
 {
     assert(!outputs.empty());
-    ss << hash;
-    ss << VARINT(outputs.begin()->second.nHeight * 2 + outputs.begin()->second.fCoinBase ? 1u : 0u);
     stats.nTransactions++;
     for (const auto& output : outputs) {
-        ss << VARINT(output.first + 1);
-        ss << output.second.out.scriptPubKey;
-        ss << VARINT(output.second.out.nValue, VarIntMode::NONNEGATIVE_SIGNED);
+        TruncatedSHA512Writer ss(SER_DISK, 0);
+        ss << COutPoint(hash, output.first);
+        ss << (uint32_t)(output.second.nHeight * 2 + output.second.fCoinBase);
+        ss << output.second.out;
+        acc.add(LtHash(ss.GetHash().begin()));
         stats.nTransactionOutputs++;
         stats.nTotalAmount += output.second.out.nValue;
         stats.nBogoSize += 32 /* txid */ + 4 /* vout index */ + 4 /* height + coinbase */ + 8 /* amount */ +
                            2 /* scriptPubKey len */ + output.second.out.scriptPubKey.size() /* scriptPubKey */;
     }
-    ss << VARINT(0u);
 }
 
 //! Calculate statistics about the unspent transaction output set
@@ -947,13 +947,12 @@ static bool GetUTXOStats(CCoinsView *view, CCoinsStats &stats)
     std::unique_ptr<CCoinsViewCursor> pcursor(view->Cursor());
     assert(pcursor);
 
-    CHashWriter ss(SER_GETHASH, PROTOCOL_VERSION);
     stats.hashBlock = pcursor->GetBestBlock();
     {
         LOCK(cs_main);
         stats.nHeight = LookupBlockIndex(stats.hashBlock)->nHeight;
     }
-    ss << stats.hashBlock;
+    LtHash acc;
     uint256 prevkey;
     std::map<uint32_t, Coin> outputs;
     while (pcursor->Valid()) {
@@ -962,7 +961,7 @@ static bool GetUTXOStats(CCoinsView *view, CCoinsStats &stats)
         Coin coin;
         if (pcursor->GetKey(key) && pcursor->GetValue(coin)) {
             if (!outputs.empty() && key.hash != prevkey) {
-                ApplyStats(stats, ss, prevkey, outputs);
+                ApplyStats(stats, acc, prevkey, outputs);
                 outputs.clear();
             }
             prevkey = key.hash;
@@ -973,9 +972,13 @@ static bool GetUTXOStats(CCoinsView *view, CCoinsStats &stats)
         pcursor->Next();
     }
     if (!outputs.empty()) {
-        ApplyStats(stats, ss, prevkey, outputs);
+        ApplyStats(stats, acc, prevkey, outputs);
     }
-    stats.hashSerialized = ss.GetHash();
+    unsigned char data[2048];
+    acc.Finalize(data);
+    TruncatedSHA512Writer ss(SER_DISK, 0);
+    ss << data;
+    stats.lthash = ss.GetHash();
     stats.nDiskSize = view->EstimateSize();
     return true;
 }
@@ -1049,7 +1052,7 @@ static UniValue gettxoutsetinfo(const JSONRPCRequest& request)
             "  \"transactions\": n,      (numeric) The number of transactions with unspent outputs\n"
             "  \"txouts\": n,            (numeric) The number of unspent transaction outputs\n"
             "  \"bogosize\": n,          (numeric) A meaningless metric for UTXO set size\n"
-            "  \"hash_serialized_2\": \"hash\", (string) The serialized hash\n"
+            "  \"lthash\": \"hash\", (string) The serialized hash\n"
             "  \"disk_size\": n,         (numeric) The estimated size of the chainstate on disk\n"
             "  \"total_amount\": x.xxx          (numeric) The total amount\n"
             "}\n"
@@ -1072,7 +1075,7 @@ static UniValue gettxoutsetinfo(const JSONRPCRequest& request)
         ret.pushKV("transactions", (int64_t)stats.nTransactions);
         ret.pushKV("txouts", (int64_t)stats.nTransactionOutputs);
         ret.pushKV("bogosize", (int64_t)stats.nBogoSize);
-        ret.pushKV("hash_serialized_2", stats.hashSerialized.GetHex());
+        ret.pushKV("lthash", stats.lthash.GetHex());
         ret.pushKV("disk_size", stats.nDiskSize);
         ret.pushKV("total_amount", ValueFromAmount(stats.nTotalAmount));
     } else {

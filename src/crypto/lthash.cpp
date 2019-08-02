@@ -20,8 +20,7 @@ LtHash::LtHash(const unsigned char* key32) noexcept
     ccBase.Keystream(tmp.data(), tmp.size());
 
     for (size_t pos = 0; pos < 256; pos += 1) {
-        const uint64_t* v = reinterpret_cast<const uint64_t*>(tmp.data() + pos * 8);
-        this->checksum_[pos] = htole64(*v);
+        this->checksum_[pos] = ReadLE64(tmp.data() + pos * 8);
     }
 }
 

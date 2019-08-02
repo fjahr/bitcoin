@@ -214,7 +214,7 @@ class BlockchainTest(BitcoinTestFramework):
         assert size > 6400
         assert size < 64000
         assert_equal(len(res['bestblock']), 64)
-        assert_equal(len(res['hash_serialized_2']), 64)
+        assert_equal(len(res['lthash']), 64)
 
         self.log.info("Test that gettxoutsetinfo() works for blockchain with just the genesis block")
         b1hash = node.getblockhash(1)
@@ -227,7 +227,8 @@ class BlockchainTest(BitcoinTestFramework):
         assert_equal(res2['txouts'], 0)
         assert_equal(res2['bogosize'], 0),
         assert_equal(res2['bestblock'], node.getblockhash(0))
-        assert_equal(len(res2['hash_serialized_2']), 64)
+        assert_equal(res2['lthash'], '6cadf7f591e48bb2310667ec811508213566b3c9725d5f4ceb070cb315f68587')
+        assert res2['lthash'] != res['lthash']
 
         self.log.info("Test that gettxoutsetinfo() returns the same result after invalidate/reconsider block")
         node.reconsiderblock(b1hash)
@@ -237,6 +238,7 @@ class BlockchainTest(BitcoinTestFramework):
         # compared between res and res3.  Everything else should be the same.
         del res['disk_size'], res3['disk_size']
         assert_equal(res, res3)
+        assert_equal(res['lthash'], res3['lthash'])
 
     def _test_getblockheader(self):
         node = self.nodes[0]
