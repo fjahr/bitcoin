@@ -8,6 +8,9 @@
 #include <compat/endian.h>
 #include <crypto/common.h>
 
+const uint64_t kMaskA = 0xffff0000ffff0000ULL;
+const uint64_t kMaskB = ~kMaskA;
+
 LtHash::LtHash() noexcept
 {
     std::fill(std::begin(this->checksum_), std::end(this->checksum_), 0);
@@ -26,9 +29,6 @@ LtHash::LtHash(const unsigned char* key32) noexcept
 
 LtHash& LtHash::add(const LtHash& addHash) noexcept
 {
-    const uint64_t kMaskA = 0xffff0000ffff0000ULL;
-    const uint64_t kMaskB = ~kMaskA;
-
     for (size_t pos = 0; pos < 256; pos += 1) {
         uint64_t v1 = this->checksum_[pos];
         uint64_t v2 = addHash.checksum_[pos];
@@ -45,9 +45,6 @@ LtHash& LtHash::add(const LtHash& addHash) noexcept
 
 LtHash& LtHash::remove(const LtHash& removeHash) noexcept
 {
-    const uint64_t kMaskA = 0xffff0000ffff0000ULL;
-    const uint64_t kMaskB = ~kMaskA;
-
     for (size_t pos = 0; pos < 256; pos += 1) {
         uint64_t v1 = this->checksum_[pos];
         uint64_t v2 = removeHash.checksum_[pos];
