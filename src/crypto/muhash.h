@@ -10,6 +10,7 @@
 #endif
 
 #include <stdint.h>
+#include <serialize.h>
 
 struct Num3072 {
 #ifdef HAVE___INT128
@@ -47,6 +48,15 @@ public:
 
     /* Finalize into a 384-byte hash. Does not change this object's value. */
     void Finalize(unsigned char* hash384) noexcept;
+
+    ADD_SERIALIZE_METHODS;
+
+    template <typename Stream, typename Operation>
+    inline void SerializationOp(Stream& s, Operation ser_action) {
+        for(int i = 0; i<data.LIMBS; i++) {
+            READWRITE(data.limbs[i]);
+        }
+    }
 };
 
 #endif // BITCOIN_CRYPTO_MUHASH_H
