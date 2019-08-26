@@ -62,6 +62,7 @@ class BlockchainTest(BitcoinTestFramework):
         self._test_getnetworkhashps()
         self._test_stopatheight()
         self._test_waitforblockheight()
+        self._test_muhash()
         assert self.nodes[0].verifychain(4, 0)
 
     def mine_chain(self):
@@ -72,6 +73,10 @@ class BlockchainTest(BitcoinTestFramework):
             self.nodes[0].setmocktime(t)
             self.nodes[0].generatetoaddress(1, address)
         assert_equal(self.nodes[0].getblockchaininfo()['blocks'], 200)
+
+    def mine_block(self):
+        address = self.nodes[0].get_deterministic_priv_key().address
+        self.nodes[0].generatetoaddress(1, address)
 
     def _test_getblockchaininfo(self):
         self.log.info("Test getblockchaininfo")
@@ -202,6 +207,10 @@ class BlockchainTest(BitcoinTestFramework):
 
     def _test_gettxoutsetinfo(self):
         node = self.nodes[0]
+
+        # TODO: Without this sleep muhash result is inconsistent
+        import time
+        time.sleep(0.1)
         res = node.gettxoutsetinfo()
 
         assert_equal(res['total_amount'], Decimal('8725.00000000'))
@@ -231,7 +240,6 @@ class BlockchainTest(BitcoinTestFramework):
 
         self.log.info("Test that gettxoutsetinfo() returns the same result after invalidate/reconsider block")
         node.reconsiderblock(b1hash)
-
         res3 = node.gettxoutsetinfo()
         # The field 'disk_size' is non-deterministic and can thus not be
         # compared between res and res3.  Everything else should be the same.
@@ -330,6 +338,31 @@ class BlockchainTest(BitcoinTestFramework):
         assert_waitforheight(current_height - 1)
         assert_waitforheight(current_height)
         assert_waitforheight(current_height + 1)
+
+    def _test_muhash(self):
+        self.restart_node(0)
+        node = self.nodes[0]
+
+        self.log.info("Test that gettxoutsetinfo() muhash is unchanged when rolling back a new block")
+
+        # Test consistency of hashing
+        res = node.gettxoutsetinfo()
+        muhash_at_207 = res['muhash']
+        assert(node.gettxoutsetinfo()['muhash'] == muhash_at_207)
+
+        # Hash is updated with new block
+        self.mine_block()
+        assert(node.gettxoutsetinfo()['muhash'] != muhash_at_207)
+
+        # Hash is rolled back to previous block if invalidated
+        b208hash = node.getblockhash(208)
+        node.invalidateblock(b208hash)
+        assert(node.gettxoutsetinfo()['muhash'] == muhash_at_207)
+
+        # Hash persists restart
+        self.stop_node(0)
+        self.start_node(0)
+        assert(node.gettxoutsetinfo()['muhash'] == muhash_at_207)
 
 
 if __name__ == '__main__':
