@@ -31,6 +31,8 @@ from test_framework.util import (
     assert_raises_rpc_error,
     assert_is_hex_string,
     assert_is_hash_string,
+    connect_nodes,
+    wait_until,
 )
 from test_framework.blocktools import (
     create_block,
@@ -48,8 +50,12 @@ from test_framework.mininode import (
 class BlockchainTest(BitcoinTestFramework):
     def set_test_params(self):
         self.setup_clean_chain = True
-        self.num_nodes = 1
+        self.num_nodes = 2
         self.supports_cli = False
+        self.extra_args = [
+            [],
+            ["-coinstatsindex"]
+        ]
 
     def run_test(self):
         self.mine_chain()
@@ -63,6 +69,8 @@ class BlockchainTest(BitcoinTestFramework):
         self._test_getnetworkhashps()
         self._test_stopatheight()
         self._test_waitforblockheight()
+        self._test_coin_stats_index()
+        self._test_utxo_set_hash()
         assert self.nodes[0].verifychain(4, 0)
 
     def mine_chain(self):
@@ -73,6 +81,10 @@ class BlockchainTest(BitcoinTestFramework):
             self.nodes[0].setmocktime(t)
             self.nodes[0].generatetoaddress(1, address)
         assert_equal(self.nodes[0].getblockchaininfo()['blocks'], 200)
+
+    def mine_block(self):
+        address = self.nodes[0].get_deterministic_priv_key().address
+        self.nodes[0].generatetoaddress(1, address)
 
     def _test_getblockchaininfo(self):
         self.log.info("Test getblockchaininfo")
@@ -205,6 +217,8 @@ class BlockchainTest(BitcoinTestFramework):
 
     def _test_gettxoutsetinfo(self):
         node = self.nodes[0]
+
+        wait_until(lambda: self.nodes[0].getblockcount() == 200)
         res = node.gettxoutsetinfo()
 
         assert_equal(res['total_amount'], Decimal('8725.00000000'))
@@ -331,6 +345,53 @@ class BlockchainTest(BitcoinTestFramework):
         assert_waitforheight(current_height - 1)
         assert_waitforheight(current_height)
         assert_waitforheight(current_height + 1)
+
+    def _test_coin_stats_index(self):
+        node = self.nodes[0]
+        index_node = self.nodes[1]
+
+        # Generate a normal transaction
+        address = self.nodes[0].get_deterministic_priv_key().address
+        self.nodes[0].sendtoaddress(address=address, amount=10, subtractfeefromamount=True)
+        self.nodes[0].generate(1)
+
+        connect_nodes(node, 1)
+        self.sync_blocks(self.nodes[0:2])
+
+        self.log.info("Test that gettxoutsetinfo() output is consistent with or without coinstatsindex option")
+        res1 = index_node.gettxoutsetinfo()
+        res0 = node.gettxoutsetinfo()
+
+        # The field 'disk_size' is non-deterministic and can thus not be
+        # compared between res and res3.
+        del res1['disk_size'], res0['disk_size']
+
+        # Everything left should be the same
+        assert_equal(res1, res0)
+
+    def _test_utxo_set_hash(self):
+        node = self.nodes[0]
+
+        self.log.info("Test that gettxoutsetinfo() utxo set hash is unchanged when rolling back a new block")
+
+        # Test consistency of hashing
+        res = node.gettxoutsetinfo()
+        hash_at_208 = res['utxo_set_hash']
+        assert(node.gettxoutsetinfo()['utxo_set_hash'] == hash_at_208)
+
+        # Hash is updated with new block
+        self.mine_block()
+        assert(node.gettxoutsetinfo()['utxo_set_hash'] != hash_at_208)
+
+        # Hash is rolled back to previous block if invalidated
+        b209hash = node.getblockhash(209)
+        node.invalidateblock(b209hash)
+        assert(node.gettxoutsetinfo()['utxo_set_hash'] == hash_at_208)
+
+        # Hash persists restart
+        self.stop_node(0)
+        self.start_node(0)
+        assert(node.gettxoutsetinfo()['utxo_set_hash'] == hash_at_208)
 
 
 if __name__ == '__main__':
