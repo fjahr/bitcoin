@@ -11,10 +11,10 @@
 #include <chainparams.h>
 #include <coins.h>
 #include <consensus/validation.h>
-#include <crypto/muhash.h>
 #include <core_io.h>
 #include <hash.h>
 #include <index/blockfilterindex.h>
+#include <index/utxosethash.h>
 #include <policy/feerate.h>
 #include <policy/policy.h>
 #include <policy/rbf.h>
@@ -925,14 +925,9 @@ struct CCoinsStats
     CCoinsStats() : nHeight(0), nTransactions(0), nTransactionOutputs(0), nBogoSize(0), nDiskSize(0), nTotalAmount(0) {}
 };
 
-static void ApplyStats(CCoinsStats &stats, MuHash3072& acc, const COutPoint outpoint, const Coin& coin)
+static void ApplyStats(CCoinsStats &stats, const COutPoint outpoint, const Coin& coin)
 {
     stats.nTransactions++;
-    TruncatedSHA512Writer ss(SER_DISK, 0);
-    ss << outpoint;
-    ss << (uint32_t)(coin.nHeight * 2 + coin.fCoinBase);
-    ss << coin.out;
-    acc *= MuHash3072(ss.GetHash().begin());
     stats.nTransactionOutputs++;
     stats.nTotalAmount += coin.out.nValue;
     stats.nBogoSize += 32 /* txid */ + 4 /* vout index */ + 4 /* height + coinbase */ + 8 /* amount */ +
@@ -945,28 +940,42 @@ static bool GetUTXOStats(CCoinsView *view, CCoinsStats &stats)
     std::unique_ptr<CCoinsViewCursor> pcursor(view->Cursor());
     assert(pcursor);
 
+    uint256 muhash_buf;
+    const CBlockIndex* block_index;
     stats.hashBlock = pcursor->GetBestBlock();
     {
         LOCK(cs_main);
-        stats.nHeight = LookupBlockIndex(stats.hashBlock)->nHeight;
+        block_index = LookupBlockIndex(stats.hashBlock);
     }
-    MuHash3072 acc;
+
+    stats.nHeight = block_index->nHeight;
+
+    bool index_ready = g_utxo_set_hash->BlockUntilSyncedToCurrentChain();
+
+    if (!g_utxo_set_hash->LookupHash(block_index, muhash_buf)) {
+        int err_code = RPC_MISC_ERROR;
+
+        if (!index_ready) {
+            throw JSONRPCError(err_code, "UTXO set hash is still in the process of being indexed.");
+        } else {
+            throw JSONRPCError(err_code, "Unable to get UTXO set hash");
+        }
+    }
+
+    stats.muhash = muhash_buf;
+
     while (pcursor->Valid()) {
         boost::this_thread::interruption_point();
         COutPoint key;
         Coin coin;
         if (pcursor->GetKey(key) && pcursor->GetValue(coin)) {
-            ApplyStats(stats, acc, key, coin);
+            ApplyStats(stats, key, coin);
         } else {
             return error("%s: unable to read value", __func__);
         }
         pcursor->Next();
     }
-    unsigned char data[384];
-    acc.Finalize(data);
-    TruncatedSHA512Writer ss(SER_DISK, 0);
-    ss << FLATDATA(data);
-    stats.muhash = ss.GetHash();
+
     stats.nDiskSize = view->EstimateSize();
     return true;
 }
