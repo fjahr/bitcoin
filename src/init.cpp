@@ -22,6 +22,7 @@
 #include <httpserver.h>
 #include <index/blockfilterindex.h>
 #include <index/txindex.h>
+#include <index/utxosethash.h>
 #include <interfaces/chain.h>
 #include <key.h>
 #include <miner.h>
@@ -1443,6 +1444,7 @@ bool AppInitMain(InitInterfaces& interfaces)
         filter_index_cache = max_cache / n_indexes;
         nTotalCache -= filter_index_cache * n_indexes;
     }
+    int64_t utsh_cache = 0;
     int64_t nCoinDBCache = std::min(nTotalCache / 2, (nTotalCache / 4) + (1 << 23)); // use 25%-50% of the remainder for disk cache
     nCoinDBCache = std::min(nCoinDBCache, nMaxCoinsDBCache << 20); // cap total coins db cache
     nTotalCache -= nCoinDBCache;
@@ -1660,6 +1662,9 @@ bool AppInitMain(InitInterfaces& interfaces)
         InitBlockFilterIndex(filter_type, filter_index_cache, false, fReindex);
         GetBlockFilterIndex(filter_type)->Start();
     }
+
+    g_utxo_set_hash = MakeUnique<UtxoSetHash>(utsh_cache, false, fReindex);
+    g_utxo_set_hash->Start();
 
     // ********************************************************* Step 9: load wallet
     for (const auto& client : interfaces.chain_clients) {
