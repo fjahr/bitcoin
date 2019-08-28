@@ -12,6 +12,7 @@ deadlock:TestPotentialDeadLockDetected
 # * boost test case invoker (entering a test case) in the main thread
 # TODO: get rid of BOOST_ macros, see also https://github.com/bitcoin/bitcoin/issues/8670
 race:blockfilter_index_initial_sync_invoker
+race:coinstatsindex_initial_sync_invoker
 race:txindex_initial_sync_invoker
 race:validation_block_tests::TestSubscriber
 
