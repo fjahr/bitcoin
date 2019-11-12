@@ -2228,27 +2228,14 @@ bool CWallet::SelectCoinsMinConf(const CAmount& nTargetValue, const CoinEligibil
         for (OutputGroup& group : groups) {
             if (!group.EligibleForSpending(eligibility_filter)) continue;
 
-            group.fee = 0;
-            group.long_term_fee = 0;
-            group.effective_value = 0;
-            for (auto it = group.m_outputs.begin(); it != group.m_outputs.end(); ) {
-                const CInputCoin& coin = *it;
-                CAmount effective_value = coin.txout.nValue - (coin.m_input_bytes < 0 ? 0 : coin_selection_params.effective_fee.GetFee(coin.m_input_bytes));
-                // Only include outputs that are positive effective value (i.e. not dust)
-                if (effective_value > 0) {
-                    group.fee += coin.m_input_bytes < 0 ? 0 : coin_selection_params.effective_fee.GetFee(coin.m_input_bytes);
-                    group.long_term_fee += coin.m_input_bytes < 0 ? 0 : long_term_feerate.GetFee(coin.m_input_bytes);
-                    if (coin_selection_params.m_subtract_fee_outputs) {
-                        group.effective_value += coin.txout.nValue;
-                    } else {
-                        group.effective_value += effective_value;
-                    }
-                    ++it;
-                } else {
-                    it = group.Discard(coin);
-                }
+            if (coin_selection_params.m_subtract_fee_outputs) {
+                group.SetFees(CFeeRate(0), long_term_feerate);
+            } else {
+                group.SetFees(coin_selection_params.effective_fee, long_term_feerate);
             }
-            if (group.effective_value > 0) utxo_pool.push_back(group);
+
+            OutputGroup pos_group = group.GetPositiveOnlyGroup();
+            if (pos_group.effective_value > 0) utxo_pool.push_back(pos_group);
         }
         // Calculate the fees for things that aren't inputs
         CAmount not_input_fees = coin_selection_params.effective_fee.GetFee(coin_selection_params.tx_noinputs_size);
