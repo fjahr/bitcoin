@@ -403,6 +403,7 @@ void SetupServerArgs()
                  strprintf("Maintain an index of compact filters by block (default: %s, values: %s).", DEFAULT_BLOCKFILTERINDEX, ListBlockFilterTypes()) +
                  " If <type> is not supplied or if <type> = 1, indexes for all known types are enabled.",
                  ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
+    gArgs.AddArg("-utxostatsindex", strprintf("Maintain UTXO statistics index, used by the gettxoutset rpc call (default: %u)", DEFAULT_TXINDEX), ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
 
     gArgs.AddArg("-addnode=<ip>", "Add a node to connect to and attempt to keep the connection open (see the `addnode` RPC command help for more info). This option can be specified multiple times to add multiple nodes.", ArgsManager::ALLOW_ANY | ArgsManager::NETWORK_ONLY, OptionsCategory::CONNECTION);
     gArgs.AddArg("-banscore=<n>", strprintf("Threshold for disconnecting misbehaving peers (default: %u)", DEFAULT_BANSCORE_THRESHOLD), ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
@@ -1666,8 +1667,10 @@ bool AppInitMain(NodeContext& node)
         GetBlockFilterIndex(filter_type)->Start();
     }
 
-    g_utxo_set_hash = MakeUnique<UtxoSetHash>(utsh_cache, false, fReindex);
-    g_utxo_set_hash->Start();
+    if (gArgs.GetBoolArg("-utxostatsindex", DEFAULT_UTXOSTATSINDEX)) {
+        g_utxo_set_hash = MakeUnique<UtxoSetHash>(utsh_cache, false, fReindex);
+        g_utxo_set_hash->Start();
+    }
 
     // ********************************************************* Step 9: load wallet
     for (const auto& client : node.chain_clients) {
