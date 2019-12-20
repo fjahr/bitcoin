@@ -167,6 +167,8 @@ class BlockchainTest(BitcoinTestFramework):
         blockhash = self.nodes[0].getblockhash(200)
         self.nodes[0].invalidateblock(blockhash)
         assert_raises_rpc_error(-8, "Block is not in main chain", self.nodes[0].getchaintxstats, blockhash=blockhash)
+        # Check consistency between headers and blocks count
+        assert_equal(self.nodes[0].getblockchaininfo()['headers'], self.nodes[0].getblockchaininfo()['blocks'])
         self.nodes[0].reconsiderblock(blockhash)
 
         chaintxstats = self.nodes[0].getchaintxstats(nblocks=1)
