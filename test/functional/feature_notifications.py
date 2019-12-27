@@ -70,6 +70,15 @@ class NotificationsTest(BitcoinTestFramework):
             txids_rpc = list(map(lambda t: t['txid'], self.nodes[1].listtransactions("*", block_count)))
             assert_equal(sorted(txids_rpc), sorted(os.listdir(self.walletnotify_dir)))
 
+            self.log.info("test -walletnotify for watchonly addresses")
+            watchonly_address = self.nodes[0].getnewaddress()
+            self.nodes[1].importaddress(watchonly_address, "watchonly", False, False)
+            self.nodes[0].generatetoaddress(1, watchonly_address)
+            wait_until(lambda: len(os.listdir(self.walletnotify_dir)) == 11, timeout=10)
+
+            new_txids_rpc = list(map(lambda t: t['txid'], self.nodes[1].listtransactions(label="*", count=11, include_watchonly=True)))
+            assert_equal(sorted(new_txids_rpc), sorted(os.listdir(self.walletnotify_dir)))
+
         # TODO: add test for `-alertnotify` large fork notifications
 
 if __name__ == '__main__':
