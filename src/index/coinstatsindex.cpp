@@ -6,7 +6,7 @@
 #include <coins.h>
 #include <crypto/muhash.h>
 #include <hash.h>
-#include <index/utxosethash.h>
+#include <index/coinstatsindex.h>
 #include <serialize.h>
 #include <txdb.h>
 #include <undo.h>
@@ -14,18 +14,30 @@
 
 constexpr char DB_BLOCK_HASH = 's';
 constexpr char DB_BLOCK_HEIGHT = 't';
-constexpr char DB_MUHASH = 'M';
+constexpr char DB_STATS = 'M';
 
 namespace {
 
 struct DBVal {
     uint256 muhash;
+    uint64_t nTransactions;
+    uint64_t nTransactionOutputs;
+    uint64_t nBogoSize;
+    CAmount nTotalAmount;
+    uint64_t coins_count;
+    uint64_t nDiskSize;
 
     ADD_SERIALIZE_METHODS;
 
     template <typename Stream, typename Operation>
     inline void SerializationOp(Stream& s, Operation ser_action) {
         READWRITE(muhash);
+        READWRITE(nTransactions);
+        READWRITE(nTransactionOutputs);
+        READWRITE(nBogoSize);
+        READWRITE(nTotalAmount);
+        READWRITE(coins_count);
+        READWRITE(nDiskSize);
     }
 };
 
@@ -85,35 +97,35 @@ struct DBMuhash {
 
 }; // namespace
 
-std::unique_ptr<UtxoSetHash> g_utxo_set_hash;
+std::unique_ptr<CoinStatsIndex> g_coin_stats_index;
 
-UtxoSetHash::UtxoSetHash(size_t n_cache_size, bool f_memory, bool f_wipe)
+CoinStatsIndex::CoinStatsIndex(size_t n_cache_size, bool f_memory, bool f_wipe)
 {
     fs::path path = GetDataDir() / "indexes" / "utxo_set_hash";
     fs::create_directories(path);
 
-    m_db = MakeUnique<UtxoSetHash::DB>(path / "db", n_cache_size, f_memory, f_wipe);
+    m_db = MakeUnique<CoinStatsIndex::DB>(path / "db", n_cache_size, f_memory, f_wipe);
 }
 
-bool UtxoSetHash::Init()
+bool CoinStatsIndex::Init()
 {
-    if (!m_db->Read(DB_MUHASH, m_muhash)) {
+    if (!m_db->Read(DB_STATS, m_muhash)) {
         // Check that the cause of the read failure is that the key does not exist. Any other errors
         // indicate database corruption or a disk failure, and starting the index would cause
         // further corruption.
-        if (m_db->Exists(DB_MUHASH)) {
+        if (m_db->Exists(DB_STATS)) {
             return error("%s: Cannot read current %s state; index may be corrupted",
                          __func__, GetName());
         }
 
-        // If the DB_MUHASH is not set, initialize empty muhash
+        // If the DB_STATS is not set, initialize empty muhash
         m_muhash = MuHash3072();
     }
 
     return BaseIndex::Init();
 }
 
-bool UtxoSetHash::WriteBlock(const CBlock& block, const CBlockIndex* pindex)
+bool CoinStatsIndex::WriteBlock(const CBlock& block, const CBlockIndex* pindex)
 {
     CBlockUndo block_undo;
 
@@ -175,7 +187,7 @@ bool UtxoSetHash::WriteBlock(const CBlock& block, const CBlockIndex* pindex)
         return false;
     }
 
-    if (!m_db->Write(DB_MUHASH, m_muhash)) {
+    if (!m_db->Write(DB_STATS, m_muhash)) {
         return false;
     }
 
@@ -208,7 +220,7 @@ static bool CopyHeightIndexToHashIndex(CDBIterator& db_it, CDBBatch& batch,
     return true;
 }
 
-bool UtxoSetHash::Rewind(const CBlockIndex* current_tip, const CBlockIndex* new_tip)
+bool CoinStatsIndex::Rewind(const CBlockIndex* current_tip, const CBlockIndex* new_tip)
 {
     assert(current_tip->GetAncestor(new_tip->nHeight) == new_tip);
 
@@ -261,7 +273,7 @@ static bool LookupOne(const CDBWrapper& db, const CBlockIndex* block_index, DBVa
     return db.Read(DBHashKey(block_index->GetBlockHash()), result);
 }
 
-bool UtxoSetHash::LookupHash(const CBlockIndex* block_index, uint256& utxo_set_hash) const
+bool CoinStatsIndex::LookupHash(const CBlockIndex* block_index, uint256& utxo_set_hash) const
 {
     DBVal entry;
     if (!LookupOne(*m_db, block_index, entry)) {
@@ -272,7 +284,7 @@ bool UtxoSetHash::LookupHash(const CBlockIndex* block_index, uint256& utxo_set_h
     return true;
 }
 
-uint256 UtxoSetHash::currentHashInternal()
+uint256 CoinStatsIndex::currentHashInternal()
 {
     unsigned char out[384];
     m_muhash.Finalize(out);
@@ -280,7 +292,7 @@ uint256 UtxoSetHash::currentHashInternal()
 }
 
 // Reverse Block in case of reorg
-bool UtxoSetHash::ReverseBlock(const CBlock& block, const CBlockIndex* pindex)
+bool CoinStatsIndex::ReverseBlock(const CBlock& block, const CBlockIndex* pindex)
 {
     CBlockUndo block_undo;
 
@@ -334,7 +346,7 @@ bool UtxoSetHash::ReverseBlock(const CBlock& block, const CBlockIndex* pindex)
         }
     }
 
-    if (!m_db->Write(DB_MUHASH, m_muhash)) {
+    if (!m_db->Write(DB_STATS, m_muhash)) {
         return false;
     }
 

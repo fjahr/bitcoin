@@ -2,8 +2,8 @@
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
-#ifndef BITCOIN_INDEX_UTXOSETHASH_H
-#define BITCOIN_INDEX_UTXOSETHASH_H
+#ifndef BITCOIN_INDEX_COINSTATSINDEX_H
+#define BITCOIN_INDEX_COINSTATSINDEX_H
 
 #include <chain.h>
 #include <crypto/muhash.h>
@@ -14,7 +14,7 @@
  * UtxoHashSet maintains a rolling hash of the utxo set and
  * caches a hash digest for every block.
  */
-class UtxoSetHash final : public BaseIndex
+class CoinStatsIndex final : public BaseIndex
 {
 private:
     std::string m_name;
@@ -35,17 +35,17 @@ protected:
 
     BaseIndex::DB& GetDB() const override { return *m_db; }
 
-    const char* GetName() const override { return "utxosethash"; }
+    const char* GetName() const override { return "coinstatsindex"; }
 
 public:
     // Constructs the index, which becomes available to be queried.
-    explicit UtxoSetHash(size_t n_cache_size, bool f_memory = false, bool f_wipe = false);
+    explicit CoinStatsIndex(size_t n_cache_size, bool f_memory = false, bool f_wipe = false);
 
     // Look up hash digest for a specific block using CBlockIndex
     bool LookupHash(const CBlockIndex* block_index, uint256& utxo_set_hash) const;
 };
 
 /// The global UTXO set hash object.
-extern std::unique_ptr<UtxoSetHash> g_utxo_set_hash;
+extern std::unique_ptr<CoinStatsIndex> g_coin_stats_index;
 
-#endif // BITCOIN_INDEX_UTXOSETHASH_H
+#endif // BITCOIN_INDEX_COINSTATSINDEX_H

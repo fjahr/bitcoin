@@ -7,7 +7,7 @@
 
 #include <coins.h>
 #include <hash.h>
-#include <index/utxosethash.h>
+#include <index/coinstatsindex.h>
 #include <serialize.h>
 #include <uint256.h>
 #include <util/system.h>
@@ -41,7 +41,7 @@ bool GetUTXOStats(CCoinsView *view, CCoinsStats &stats)
 
     stats.nHeight = block_index->nHeight;
 
-    if (!g_utxo_set_hash->LookupHash(block_index, muhash_buf)) {
+    if (!g_coin_stats_index->LookupHash(block_index, muhash_buf)) {
         return false;
     }
 

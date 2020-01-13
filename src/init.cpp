@@ -22,7 +22,7 @@
 #include <httpserver.h>
 #include <index/blockfilterindex.h>
 #include <index/txindex.h>
-#include <index/utxosethash.h>
+#include <index/coinstatsindex.h>
 #include <interfaces/chain.h>
 #include <key.h>
 #include <miner.h>
@@ -168,8 +168,8 @@ void Interrupt(NodeContext& node)
         g_txindex->Interrupt();
     }
     ForEachBlockFilterIndex([](BlockFilterIndex& index) { index.Interrupt(); });
-    if (g_utxo_set_hash) {
-        g_utxo_set_hash->Interrupt();
+    if (g_coin_stats_index) {
+        g_coin_stats_index->Interrupt();
     }
 }
 
@@ -203,7 +203,7 @@ void Shutdown(NodeContext& node)
     if (node.connman) node.connman->Stop();
     if (g_txindex) g_txindex->Stop();
     ForEachBlockFilterIndex([](BlockFilterIndex& index) { index.Stop(); });
-    if (g_utxo_set_hash) g_utxo_set_hash->Stop();
+    if (g_coin_stats_index) g_coin_stats_index->Stop();
 
     StopTorControl();
 
@@ -219,7 +219,7 @@ void Shutdown(NodeContext& node)
     node.banman.reset();
     g_txindex.reset();
     DestroyAllBlockFilterIndexes();
-    g_utxo_set_hash.reset();
+    g_coin_stats_index.reset();
 
     if (::mempool.IsLoaded() && gArgs.GetArg("-persistmempool", DEFAULT_PERSIST_MEMPOOL)) {
         DumpMempool(::mempool);
@@ -1443,7 +1443,7 @@ bool AppInitMain(NodeContext& node)
         filter_index_cache = max_cache / n_indexes;
         nTotalCache -= filter_index_cache * n_indexes;
     }
-    int64_t utsh_cache = 0;
+    int64_t coin_stats_cache = 0;
     int64_t nCoinDBCache = std::min(nTotalCache / 2, (nTotalCache / 4) + (1 << 23)); // use 25%-50% of the remainder for disk cache
     nCoinDBCache = std::min(nCoinDBCache, nMaxCoinsDBCache << 20); // cap total coins db cache
     nTotalCache -= nCoinDBCache;
@@ -1667,9 +1667,9 @@ bool AppInitMain(NodeContext& node)
         GetBlockFilterIndex(filter_type)->Start();
     }
 
-    if (gArgs.GetBoolArg("-utxostatsindex", DEFAULT_UTXOSTATSINDEX)) {
-        g_utxo_set_hash = MakeUnique<UtxoSetHash>(utsh_cache, false, fReindex);
-        g_utxo_set_hash->Start();
+    if (gArgs.GetBoolArg("-coinstatsindex", DEFAULT_UTXOSTATSINDEX)) {
+        g_coin_stats_index = MakeUnique<CoinStatsIndex>(coin_stats_cache, false, fReindex);
+        g_coin_stats_index->Start();
     }
 
     // ********************************************************* Step 9: load wallet
