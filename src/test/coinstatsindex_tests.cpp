@@ -14,11 +14,11 @@ BOOST_FIXTURE_TEST_CASE(coinstatsindex_initial_sync, TestChain100Setup)
 {
     CoinStatsIndex coin_stats_index(0, false);
 
-    uint256 hash_digest;
+    CCoinsStats coin_stats;
     CBlockIndex* block_index = ::ChainActive().Tip();
 
     // UTXO set hash should not be found before it is started.
-    BOOST_CHECK(!coin_stats_index.LookupHash(block_index, hash_digest));
+    BOOST_CHECK(!coin_stats_index.LookupStats(block_index, coin_stats));
 
     // BlockUntilSyncedToCurrentChain should return false before utxo_set_hash is started.
     BOOST_CHECK(!coin_stats_index.BlockUntilSyncedToCurrentChain());
@@ -35,11 +35,11 @@ BOOST_FIXTURE_TEST_CASE(coinstatsindex_initial_sync, TestChain100Setup)
 
     // Check that UTXO set hash works for genesis block.
     CBlockIndex* genesis_block_index = ::ChainActive().Genesis();
-    BOOST_CHECK(coin_stats_index.LookupHash(genesis_block_index, hash_digest));
+    BOOST_CHECK(coin_stats_index.LookupStats(genesis_block_index, coin_stats));
 
     // Check that UTXO set hash updates with new blocks.
     block_index = ::ChainActive().Tip();
-    coin_stats_index.LookupHash(block_index, hash_digest);
+    coin_stats_index.LookupStats(block_index, coin_stats);
 
     CScript scriptPubKey = CScript() << ToByteVector(coinbaseKey.GetPubKey()) << OP_CHECKSIG;
     std::vector<CMutableTransaction> noTxns;
@@ -51,12 +51,12 @@ BOOST_FIXTURE_TEST_CASE(coinstatsindex_initial_sync, TestChain100Setup)
         MilliSleep(100);
     }
 
-    uint256 new_hash_digest;
+    CCoinsStats new_coin_stats;
     CBlockIndex* new_block_index = ::ChainActive().Tip();
-    coin_stats_index.LookupHash(new_block_index, new_hash_digest);
+    coin_stats_index.LookupStats(new_block_index, new_coin_stats);
 
     BOOST_CHECK(block_index != new_block_index);
-    BOOST_CHECK(hash_digest != new_hash_digest);
+    BOOST_CHECK(coin_stats.hashSerialized != new_coin_stats.hashSerialized);
 
     // shutdown sequence (c.f. Shutdown() in init.cpp)
     coin_stats_index.Stop();

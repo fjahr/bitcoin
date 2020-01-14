@@ -9,6 +9,7 @@
 #include <crypto/muhash.h>
 #include <flatfile.h>
 #include <index/base.h>
+#include <node/coinstats.h>
 
 /**
  * UtxoHashSet maintains a rolling hash of the utxo set and
@@ -42,7 +43,7 @@ public:
     explicit CoinStatsIndex(size_t n_cache_size, bool f_memory = false, bool f_wipe = false);
 
     // Look up hash digest for a specific block using CBlockIndex
-    bool LookupHash(const CBlockIndex* block_index, uint256& utxo_set_hash) const;
+    bool LookupStats(const CBlockIndex* block_index, CCoinsStats& coins_stats) const;
 };
 
 /// The global UTXO set hash object.

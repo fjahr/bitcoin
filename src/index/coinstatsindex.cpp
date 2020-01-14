@@ -7,6 +7,7 @@
 #include <crypto/muhash.h>
 #include <hash.h>
 #include <index/coinstatsindex.h>
+#include <node/coinstats.h>
 #include <serialize.h>
 #include <txdb.h>
 #include <undo.h>
@@ -273,14 +274,14 @@ static bool LookupOne(const CDBWrapper& db, const CBlockIndex* block_index, DBVa
     return db.Read(DBHashKey(block_index->GetBlockHash()), result);
 }
 
-bool CoinStatsIndex::LookupHash(const CBlockIndex* block_index, uint256& utxo_set_hash) const
+bool CoinStatsIndex::LookupStats(const CBlockIndex* block_index, CCoinsStats& coins_stats) const
 {
     DBVal entry;
     if (!LookupOne(*m_db, block_index, entry)) {
         return false;
     }
 
-    utxo_set_hash = entry.muhash;
+    coins_stats.hashSerialized = entry.muhash;
     return true;
 }
 
