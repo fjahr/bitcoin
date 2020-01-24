@@ -7,6 +7,7 @@
 
 #include <coins.h>
 #include <hash.h>
+#include <index/coinstatsindex.h>
 #include <serialize.h>
 #include <uint256.h>
 #include <util/system.h>
@@ -22,6 +23,18 @@ uint64_t GetBogoSize(const CScript& scriptPubKey)
            8 /* amount */ +
            2 /* scriptPubKey len */ +
            scriptPubKey.size() /* scriptPubKey */;
+}
+
+static bool CanUseIndex(CHashWriter& ss)
+{
+    return false;
+}
+static bool CanUseIndex(std::nullptr_t)
+{
+    if (g_coin_stats_index) {
+        return true;
+    }
+    return false;
 }
 
 static void ApplyStats(CCoinsStats& stats, CHashWriter& ss, const uint256& hash, const std::map<uint32_t, Coin>& outputs)
@@ -57,11 +70,23 @@ static bool GetUTXOStats(CCoinsView* view, CCoinsStats& stats, T hash_obj, const
     stats = CCoinsStats();
     std::unique_ptr<CCoinsViewCursor> pcursor(view->Cursor());
     assert(pcursor);
-
     stats.hashBlock = pcursor->GetBestBlock();
+
+    const CBlockIndex* block_index;
     {
         LOCK(cs_main);
-        stats.nHeight = LookupBlockIndex(stats.hashBlock)->nHeight;
+        block_index = LookupBlockIndex(pcursor->GetBestBlock());
+    }
+
+    stats.nHeight = block_index->nHeight;
+
+    // Use CoinStatsIndex if it is available and hash_type none was requested
+    if (CanUseIndex(hash_obj)) {
+        if (g_coin_stats_index->LookupStats(block_index, stats)) {
+            return true;
+        } else {
+            return false;
+        }
     }
 
     PrepareHash(hash_obj, stats);
