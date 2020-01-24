@@ -2,14 +2,15 @@
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
-#include "muhash.h"
+#include <crypto/muhash.h>
 
-#include <limits>
-#include "common.h"
-#include "chacha20.h"
+#include <crypto/chacha20.h>
+#include <crypto/common.h>
 
 #include <assert.h>
 #include <stdio.h>
+
+#include <limits>
 
 namespace {
 
@@ -286,7 +287,7 @@ MuHash3072::MuHash3072() noexcept
 MuHash3072::MuHash3072(const unsigned char* key32) noexcept
 {
     unsigned char tmp[384];
-    ChaCha20(key32, 32).Output(tmp, 384);
+    ChaCha20(key32, 32).Keystream(tmp, 384);
     for (int i = 0; i < Num3072::LIMBS; ++i) {
         if (sizeof(Num3072::limb_type) == 4) {
             data.limbs[i] = ReadLE32(tmp + 4 * i);
