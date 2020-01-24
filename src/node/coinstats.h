@@ -36,4 +36,6 @@ struct CCoinsStats
 //! Calculate statistics about the unspent transaction output set
 bool GetUTXOStats(CCoinsView* view, CCoinsStats& stats, const CoinStatsHashType hash_type, const std::function<void()>& interruption_point = {});
 
+uint64_t GetBogoSize(const CScript& scriptPubKey);
+
 #endif // BITCOIN_NODE_COINSTATS_H
