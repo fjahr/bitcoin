@@ -19,7 +19,6 @@ static void ApplyStats(CCoinsStats &stats, MuHash3072& muhash, const uint256& ha
 {
     assert(!outputs.empty());
     Coin coin = outputs.begin()->second;
-    stats.nTransactions++;
     for (const auto& output : outputs) {
         COutPoint outpoint = COutPoint(hash, output.first);
 
