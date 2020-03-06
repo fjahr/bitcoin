@@ -29,7 +29,6 @@ static void ApplyStats(CCoinsStats& stats, CHashWriter& ss, const uint256& hash,
     assert(!outputs.empty());
     ss << hash;
     ss << VARINT(outputs.begin()->second.nHeight * 2 + outputs.begin()->second.fCoinBase ? 1u : 0u);
-    stats.nTransactions++;
     for (const auto& output : outputs) {
         ss << VARINT(output.first + 1);
         ss << output.second.out.scriptPubKey;
@@ -44,7 +43,6 @@ static void ApplyStats(CCoinsStats& stats, CHashWriter& ss, const uint256& hash,
 static void ApplyStats(CCoinsStats& stats, std::nullptr_t, const uint256& hash, const std::map<uint32_t, Coin>& outputs)
 {
     assert(!outputs.empty());
-    stats.nTransactions++;
     for (const auto& output : outputs) {
         stats.nTransactionOutputs++;
         stats.nTotalAmount += output.second.out.nValue;
