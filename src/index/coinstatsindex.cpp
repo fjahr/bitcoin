@@ -24,6 +24,9 @@ struct DBVal {
     uint64_t nTransactionOutputs;
     uint64_t nBogoSize;
     CAmount nTotalAmount;
+    CAmount unclaimed;
+    CAmount op_return;
+    CAmount big_script;
     uint64_t nDiskSize;
 
     ADD_SERIALIZE_METHODS;
@@ -35,6 +38,9 @@ struct DBVal {
         READWRITE(nBogoSize);
         READWRITE(nTotalAmount);
         READWRITE(nDiskSize);
+        READWRITE(unclaimed);
+        READWRITE(op_return);
+        READWRITE(big_script);
     }
 };
 
@@ -121,6 +127,9 @@ bool CoinStatsIndex::Init()
         m_nBogoSize = 0;
         m_nTotalAmount = 0;
         m_nDiskSize = 0;
+        m_unclaimed = 0;
+        m_big_script = 0;
+        m_op_return = 0;
     }
 
     return BaseIndex::Init();
@@ -129,6 +138,9 @@ bool CoinStatsIndex::Init()
 bool CoinStatsIndex::WriteBlock(const CBlock& block, const CBlockIndex* pindex)
 {
     CBlockUndo block_undo;
+
+    CAmount total_in = 0;
+    CAmount total_out = 0;
 
     // Ignore genesis block
     if (pindex->nHeight > 0) {
@@ -150,7 +162,6 @@ bool CoinStatsIndex::WriteBlock(const CBlock& block, const CBlockIndex* pindex)
         bool is_bip30_block = (pindex->nHeight==91722 && pindex->GetBlockHash() == uint256S("0x00000000000271a2dc26e7667f8419f2e15416dc6955e5a6c6cdf3f2574dd08e")) ||
                               (pindex->nHeight==91812 && pindex->GetBlockHash() == uint256S("0x00000000000af0aed4792b1acee3d966af36cf5def14935db8de83d6f9306f2f"));
         MuHash3072 undo_muhash;
-
         // Add the new utxos created from the block
         for (size_t i = 0; i < block.vtx.size(); ++i) {
             const auto& tx = block.vtx.at(i);
@@ -165,8 +176,17 @@ bool CoinStatsIndex::WriteBlock(const CBlock& block, const CBlockIndex* pindex)
                 COutPoint outpoint = COutPoint(tx->GetHash(), j);
                 Coin coin = Coin(out, pindex->nHeight, tx->IsCoinBase());
 
+                total_out += coin.out.nValue;
+
                 // Skip unspendable coins
-                if (coin.out.scriptPubKey.IsUnspendable()) continue;
+                if (coin.out.scriptPubKey.IsUnspendableOPReturn()) {
+                    m_op_return += coin.out.nValue;
+                    continue;
+                }
+                if (coin.out.scriptPubKey.IsUnspendableBigScript()) {
+                    m_big_script += coin.out.nValue;
+                    continue;
+                }
 
                 TruncatedSHA512Writer ss(SER_DISK, 0);
                 ss << outpoint;
@@ -194,6 +214,8 @@ bool CoinStatsIndex::WriteBlock(const CBlock& block, const CBlockIndex* pindex)
                     ss << coin.out;
                     undo_muhash *= MuHash3072(ss.GetHash().begin());
 
+                    total_in += coin.out.nValue;
+
                     m_nTransactionOutputs--;
                     m_nTotalAmount -= coin.out.nValue;
                     m_nBogoSize -= 32 /* txid */ + 4 /* vout index */ + 4 /* height + coinbase */ + 8 /* amount */ +
@@ -203,6 +225,12 @@ bool CoinStatsIndex::WriteBlock(const CBlock& block, const CBlockIndex* pindex)
         }
 
         m_muhash /= undo_muhash;
+    }
+
+    // Unclaimed block rewards
+    CAmount block_subsidy = GetBlockSubsidy(pindex->nHeight, Params().GetConsensus());
+    if ((total_in + block_subsidy) > total_out) {
+        m_unclaimed += (total_in + block_subsidy - total_out);
     }
 
     CCoinsView* coins_view = WITH_LOCK(cs_main, return &ChainstateActive().CoinsDB());
@@ -215,6 +243,9 @@ bool CoinStatsIndex::WriteBlock(const CBlock& block, const CBlockIndex* pindex)
     value.second.nTransactionOutputs = m_nTransactionOutputs;
     value.second.nBogoSize = m_nBogoSize;
     value.second.nTotalAmount = m_nTotalAmount;
+    value.second.unclaimed = m_unclaimed;
+    value.second.op_return = m_op_return;
+    value.second.big_script = m_big_script;
 
     if (!m_db->Write(DBHeightKey(pindex->nHeight), value)) {
         return false;
@@ -320,6 +351,9 @@ bool CoinStatsIndex::LookupStats(const CBlockIndex* block_index, CCoinsStats& co
     coins_stats.nTransactionOutputs = entry.nTransactionOutputs;
     coins_stats.nBogoSize = entry.nBogoSize;
     coins_stats.nTotalAmount = entry.nTotalAmount;
+    coins_stats.unclaimed = entry.unclaimed;
+    coins_stats.op_return = entry.op_return;
+    coins_stats.big_script = entry.big_script;
     coins_stats.nDiskSize = entry.nDiskSize;
 
     return true;
@@ -356,6 +390,9 @@ bool CoinStatsIndex::ReverseBlock(const CBlock& block, const CBlockIndex* pindex
 
     MuHash3072 do_muhash;
 
+    CAmount total_in = 0;
+    CAmount total_out = 0;
+
     // Remove the new utxos that were created from the block
     for (size_t i = 0; i < block.vtx.size(); ++i) {
         const auto& tx = block.vtx.at(i);
@@ -364,6 +401,18 @@ bool CoinStatsIndex::ReverseBlock(const CBlock& block, const CBlockIndex* pindex
             const CTxOut& out = tx->vout[j];
             COutPoint outpoint = COutPoint(tx->GetHash(), j);
             Coin coin = Coin(out, pindex->nHeight, tx->IsCoinBase());
+
+            total_out += coin.out.nValue;
+
+            // Skip unspendable coins
+            if (coin.out.scriptPubKey.IsUnspendableOPReturn()) {
+                m_op_return -= coin.out.nValue;
+                continue;
+            }
+            if (coin.out.scriptPubKey.IsUnspendableBigScript()) {
+                m_big_script -= coin.out.nValue;
+                continue;
+            }
 
             // Skip unspendable coins
             if (coin.out.scriptPubKey.IsUnspendable()) continue;
@@ -383,6 +432,8 @@ bool CoinStatsIndex::ReverseBlock(const CBlock& block, const CBlockIndex* pindex
                 Coin coin = tx_undo.vprevout[j];
                 COutPoint outpoint = COutPoint(tx->vin[j].prevout.hash, tx->vin[j].prevout.n);
 
+                total_in += coin.out.nValue;
+
                 TruncatedSHA512Writer ss(SER_DISK, 0);
                 ss << outpoint;
                 ss << (uint32_t)(coin.nHeight * 2 + coin.fCoinBase);
@@ -394,8 +445,18 @@ bool CoinStatsIndex::ReverseBlock(const CBlock& block, const CBlockIndex* pindex
 
     m_muhash /= do_muhash;
 
+    // Unclaimed block rewards
+    CAmount block_subsidy = GetBlockSubsidy(pindex->nHeight, Params().GetConsensus());
+    if ((total_in + block_subsidy) > total_out) {
+        m_unclaimed -= (total_in + block_subsidy - total_out);
+    }
+
+
     m_nTransactionOutputs = read_out.second.nTransactionOutputs;
     m_nTotalAmount = read_out.second.nTotalAmount;
+    m_unclaimed = read_out.second.unclaimed;
+    m_op_return = read_out.second.op_return;
+    m_big_script = read_out.second.big_script;
     m_nBogoSize = read_out.second.nBogoSize;
     m_nDiskSize = read_out.second.nDiskSize;
 

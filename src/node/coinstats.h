@@ -22,6 +22,9 @@ struct CCoinsStats
     uint256 hashSerialized{};
     uint64_t nDiskSize{0};
     CAmount nTotalAmount{0};
+    CAmount op_return{0};
+    CAmount big_script{0};
+    CAmount unclaimed{0};
 
     //! The number of coins contained.
     uint64_t coins_count{0};

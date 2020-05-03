@@ -559,6 +559,16 @@ public:
         return (size() > 0 && *begin() == OP_RETURN) || (size() > MAX_SCRIPT_SIZE);
     }
 
+    bool IsUnspendableOPReturn() const
+    {
+        return (size() > 0 && *begin() == OP_RETURN);
+    }
+
+    bool IsUnspendableBigScript() const
+    {
+        return (size() > MAX_SCRIPT_SIZE);
+    }
+
     void clear()
     {
         // The default prevector::clear() does not release memory

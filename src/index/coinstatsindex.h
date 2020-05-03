@@ -26,6 +26,9 @@ private:
     uint64_t m_nBogoSize;
     CAmount m_nTotalAmount;
     uint64_t m_nDiskSize;
+    CAmount m_unclaimed;
+    CAmount m_op_return;
+    CAmount m_big_script;
 
     // Digest of the current Muhash object
     uint256 currentHashInternal();

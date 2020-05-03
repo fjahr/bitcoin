@@ -989,6 +989,9 @@ static UniValue gettxoutsetinfo(const JSONRPCRequest& request)
         ret.pushKV("utxo_set_hash", stats.hashSerialized.GetHex());
         ret.pushKV("disk_size", stats.nDiskSize);
         ret.pushKV("total_amount", ValueFromAmount(stats.nTotalAmount));
+        ret.pushKV("op_return", ValueFromAmount(stats.op_return));
+        ret.pushKV("big_script", ValueFromAmount(stats.big_script));
+        ret.pushKV("unclaimed", ValueFromAmount(stats.unclaimed));
     } else {
         throw JSONRPCError(RPC_INTERNAL_ERROR, "Unable to read UTXO set");
     }
