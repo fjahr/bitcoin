@@ -65,24 +65,25 @@ static void ApplyStats(CCoinsStats& stats, std::nullptr_t, const uint256& hash, 
 
 //! Calculate statistics about the unspent transaction output set
 template <typename T>
-static bool GetUTXOStats(CCoinsView* view, CCoinsStats& stats, T hash_obj, const std::function<void()>& interruption_point)
+static bool GetUTXOStats(CCoinsView* view, CCoinsStats& stats, T hash_obj, const std::function<void()>& interruption_point, const CBlockIndex* pindex)
 {
     stats = CCoinsStats();
     std::unique_ptr<CCoinsViewCursor> pcursor(view->Cursor());
     assert(pcursor);
-    stats.hashBlock = pcursor->GetBestBlock();
 
-    const CBlockIndex* block_index;
-    {
-        LOCK(cs_main);
-        block_index = LookupBlockIndex(pcursor->GetBestBlock());
+    if (pindex == nullptr) {
+        {
+            LOCK(cs_main);
+            pindex = LookupBlockIndex(pcursor->GetBestBlock());
+        }
     }
 
-    stats.nHeight = block_index->nHeight;
+    stats.hashBlock = pindex->GetBlockHash();
+    stats.nHeight = pindex->nHeight;
 
     // Use CoinStatsIndex if it is available and hash_type none was requested
     if (CanUseIndex(hash_obj)) {
-        if (g_coin_stats_index->LookupStats(block_index, stats)) {
+        if (g_coin_stats_index->LookupStats(pindex, stats)) {
             return true;
         } else {
             return false;
@@ -120,15 +121,15 @@ static bool GetUTXOStats(CCoinsView* view, CCoinsStats& stats, T hash_obj, const
     return true;
 }
 
-bool GetUTXOStats(CCoinsView* view, CCoinsStats& stats, CoinStatsHashType hash_type, const std::function<void()>& interruption_point)
+bool GetUTXOStats(CCoinsView* view, CCoinsStats& stats, CoinStatsHashType hash_type, const std::function<void()>& interruption_point, const CBlockIndex* pindex)
 {
     switch (hash_type) {
     case(CoinStatsHashType::HASH_SERIALIZED): {
         CHashWriter ss(SER_GETHASH, PROTOCOL_VERSION);
-        return GetUTXOStats(view, stats, ss, interruption_point);
+        return GetUTXOStats(view, stats, ss, interruption_point, pindex);
     }
     case(CoinStatsHashType::NONE): {
-        return GetUTXOStats(view, stats, nullptr, interruption_point);
+        return GetUTXOStats(view, stats, nullptr, interruption_point, pindex);
     }
     } // no default case, so the compiler can warn about missing cases
     assert(false);
