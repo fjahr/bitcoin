@@ -167,6 +167,18 @@ class CompactFiltersTest(BitcoinTestFramework):
                 filter_type=FILTER_TYPE_BASIC,
                 stop_hash=123456789,
             ),
+            # Requesting invalid cfheader start/stop heights results in disconnection.
+            msg_getcfheaders(
+                filter_type=FILTER_TYPE_BASIC,
+                start_height=1001,
+                stop_hash=int(main_block_hash, 16)
+            ),
+            # Requesting too many cfheaders results in disconnection.
+            msg_getcfheaders(
+                filter_type=FILTER_TYPE_BASIC,
+                start_height=0,
+                stop_hash=int(tip_hash, 16)
+            ),
         ]
         for request in requests:
             node0 = self.nodes[0].add_p2p_connection(P2PInterface())
