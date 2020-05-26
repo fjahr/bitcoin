@@ -96,7 +96,7 @@ struct OutputGroup
     std::vector<CInputCoin>::iterator Discard(const CInputCoin& output);
     bool EligibleForSpending(const CoinEligibilityFilter& eligibility_filter) const;
     void SetFees(const CFeeRate effective_feerate, const CFeeRate long_term_feerate);
-    OutputGroup GetPositiveOnlyGroup();
+    void PositiveOnly();
 };
 
 bool SelectCoinsBnB(std::vector<OutputGroup>& utxo_pool, const CAmount& target_value, const CAmount& cost_of_change, std::set<CInputCoin>& out_set, CAmount& value_ret, CAmount not_input_fees);

@@ -347,17 +347,15 @@ void OutputGroup::SetFees(const CFeeRate effective_feerate, const CFeeRate long_
     }
 }
 
-OutputGroup OutputGroup::GetPositiveOnlyGroup()
+void OutputGroup::PositiveOnly()
 {
-    OutputGroup group(*this);
-    for (auto it = group.m_outputs.begin(); it != group.m_outputs.end(); ) {
+    for (auto it = m_outputs.begin(); it != m_outputs.end(); ) {
         const CInputCoin& coin = *it;
         // Only include outputs that are positive effective value (i.e. not dust)
         if (coin.effective_value <= 0) {
-            it = group.Discard(coin);
+            it = Discard(coin);
         } else {
             ++it;
         }
     }
-    return group;
 }

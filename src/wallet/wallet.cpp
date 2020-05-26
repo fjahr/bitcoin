@@ -2234,8 +2234,8 @@ bool CWallet::SelectCoinsMinConf(const CAmount& nTargetValue, const CoinEligibil
                 group.SetFees(coin_selection_params.effective_fee, long_term_feerate);
             }
 
-            OutputGroup pos_group = group.GetPositiveOnlyGroup();
-            if (pos_group.effective_value > 0) utxo_pool.push_back(pos_group);
+            group.PositiveOnly();
+            if (group.effective_value > 0) utxo_pool.push_back(group);
         }
         // Calculate the fees for things that aren't inputs
         CAmount not_input_fees = coin_selection_params.effective_fee.GetFee(coin_selection_params.tx_noinputs_size);
