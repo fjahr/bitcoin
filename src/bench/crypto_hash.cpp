@@ -51,6 +51,24 @@ static void SHA256_32b(benchmark::State& state)
     }
 }
 
+static void SHA256_100b(benchmark::State& state)
+{
+    std::vector<uint8_t> in(100,0);
+    while (state.KeepRunning()) {
+        CSHA256()
+            .Write(in.data(), in.size())
+            .Finalize(in.data());
+    }
+}
+
+static void TruncatedSHA512_100b(benchmark::State& state)
+{
+    std::vector<uint8_t> in(100,0);
+    while (state.KeepRunning()) {
+        (TruncatedSHA512Writer(SER_DISK, 0) << in).GetHash();
+    }
+}
+
 static void SHA256D64_1024(benchmark::State& state)
 {
     std::vector<uint8_t> in(64 * 1024, 0);
@@ -160,6 +178,9 @@ BENCHMARK(RIPEMD160, 440);
 BENCHMARK(SHA1, 570);
 BENCHMARK(SHA256, 340);
 BENCHMARK(SHA512, 330);
+
+BENCHMARK(TruncatedSHA512_100b, 1000 * 1000);
+BENCHMARK(SHA256_100b, 1000 * 1000);
 
 BENCHMARK(SHA256_32b, 4700 * 1000);
 BENCHMARK(SipHash_32b, 40 * 1000 * 1000);
