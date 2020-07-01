@@ -4,6 +4,7 @@
 
 #include <crypto/hmac_sha256.h>
 #include <crypto/hmac_sha512.h>
+#include <crypto/muhash.h>
 #include <crypto/ripemd160.h>
 #include <crypto/sha1.h>
 #include <crypto/sha256.h>
@@ -33,6 +34,7 @@ void test_one_input(const std::vector<uint8_t>& buffer)
     CSHA256 sha256;
     CSHA512 sha512;
     CSipHasher sip_hasher{fuzzed_data_provider.ConsumeIntegral<uint64_t>(), fuzzed_data_provider.ConsumeIntegral<uint64_t>()};
+    MuHash3072 muhash = MuHash3072();
 
     while (fuzzed_data_provider.ConsumeBool()) {
         switch (fuzzed_data_provider.ConsumeIntegralInRange<int>(0, 2)) {
@@ -58,6 +60,9 @@ void test_one_input(const std::vector<uint8_t>& buffer)
             (void)Hash160(data);
             (void)Hash160(data.begin(), data.end());
             (void)sha512.Size();
+
+            muhash *= MuHash3072(data.data());
+            muhash /= MuHash3072(data.data() + 32);
             break;
         }
         case 1: {
@@ -70,7 +75,7 @@ void test_one_input(const std::vector<uint8_t>& buffer)
             break;
         }
         case 2: {
-            switch (fuzzed_data_provider.ConsumeIntegralInRange<int>(0, 8)) {
+            switch (fuzzed_data_provider.ConsumeIntegralInRange<int>(0, 9)) {
             case 0: {
                 data.resize(CHash160::OUTPUT_SIZE);
                 hash160.Finalize(data.data());
@@ -114,6 +119,11 @@ void test_one_input(const std::vector<uint8_t>& buffer)
             case 8: {
                 data.resize(1);
                 data[0] = sip_hasher.Finalize() % 256;
+                break;
+            }
+            case 9: {
+                data.resize(32);
+                muhash.Finalize(data.data());
                 break;
             }
             }
