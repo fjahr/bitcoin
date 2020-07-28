@@ -490,6 +490,10 @@ bool SignTransaction(CMutableTransaction& mtx, const SigningProvider* keystore, 
             ProduceSignature(*keystore, MutableTransactionSignatureCreator(&mtx, i, amount, nHashType), prevPubKey, sigdata);
         }
 
+        if (!sigdata.complete) {
+            input_errors[i] = "Unable to sign input, missing keys";
+        }
+
         UpdateInput(txin, sigdata);
 
         // amount must be specified for valid segwit signature
@@ -502,12 +506,12 @@ bool SignTransaction(CMutableTransaction& mtx, const SigningProvider* keystore, 
         if (!VerifyScript(txin.scriptSig, prevPubKey, &txin.scriptWitness, STANDARD_SCRIPT_VERIFY_FLAGS, TransactionSignatureChecker(&txConst, i, amount), &serror)) {
             if (serror == SCRIPT_ERR_INVALID_STACK_OPERATION) {
                 // Unable to sign input and verification failed (possible attempt to partially sign).
-                input_errors[i] = "Unable to sign input, invalid stack size (possibly missing key)";
+                input_errors.emplace(i, "Unable to sign input, invalid stack size (possibly missing key)");
             } else if (serror == SCRIPT_ERR_SIG_NULLFAIL) {
                 // Verification failed (possibly due to insufficient signatures).
-                input_errors[i] = "CHECK(MULTI)SIG failing with non-zero signature (possibly need more signatures)";
+                input_errors.emplace(i, "CHECK(MULTI)SIG failing with non-zero signature (possibly need more signatures)");
             } else {
-                input_errors[i] = ScriptErrorString(serror);
+                input_errors.emplace(i, ScriptErrorString(serror));
             }
         } else {
             // If this input succeeds, make sure there is no error set for it
