@@ -52,7 +52,7 @@ from test_framework.script import (
     SIGHASH_NONE,
     SIGHASH_SINGLE,
     SIGHASH_ANYONECANPAY,
-    TaprootSignatureHash,
+    taproot_signature_hash,
     SegwitV0SignatureHash,
     LegacySignatureHash,
     is_op_success,
@@ -190,11 +190,11 @@ def damage_bytes(b):
 #   - The spent UTXOs by this transaction (list of CTxOut)
 #   - Whether to produce a valid spend (bool)
 # - A string with an expected error message for failure case if known
-# - The (pre-taproot) sigops weight consumed by a succesful spend
+# - The (pre-taproot) sigops weight consumed by a successful spend
 
 Spender = namedtuple("Spender", "script,address,comment,is_standard,sat_function,err_msg,sigops_weight")
 
-def spend_no_sig(tx, input_index, spent_utxos, info, script):
+def spend_no_sig(tx, input_index, info, script):
     """Construct witness."""
     script = script["script"]
     tx.wit.vtxinwit[input_index].scriptWitness.stack = [script, info[2][script]]
@@ -231,9 +231,9 @@ def spend_single_sig(tx, input_index, spent_utxos, info, key, annex=None, hashty
         ht ^= 2
     # Compute sighash
     if script:
-        sighash = TaprootSignatureHash(tx, spent_utxos, ht, input_index, scriptpath=True, script=script, codeseparator_pos=pos, annex=annex)
+        sighash = taproot_signature_hash(tx, spent_utxos, ht, input_index, scriptpath=True, script=script, codeseparator_pos=pos, annex=annex)
     else:
-        sighash = TaprootSignatureHash(tx, spent_utxos, ht, input_index, scriptpath=False, annex=annex)
+        sighash = taproot_signature_hash(tx, spent_utxos, ht, input_index, scriptpath=False, annex=annex)
     if damage_type == 0:
         sighash = damage_bytes(sighash)
     # Compute signature
@@ -262,12 +262,12 @@ def spend_single_sig(tx, input_index, spent_utxos, info, key, annex=None, hashty
 
 def spend_alwaysvalid(tx, input_index, info, script, annex=None, damage=False):
     if isinstance(script, tuple):
-        version, script = script
+        _, script = script
     ret = [script, info[2][script]]
     if damage:
         # With 50% chance, we bit flip the script (unless the script is an empty vector)
         # With 50% chance, we bit flip the control block
-        if random.choice([True, False]) or len(ret[0]) == 0:
+        if random.choice([True, False]) or not ret[0]:
             # Annex is always required for leaf version 0x50
             # Unless the original version is 0x50, we couldn't convert it to 0x50 without using annex
             tmp = damage_bytes(ret[1])
@@ -280,7 +280,7 @@ def spend_alwaysvalid(tx, input_index, info, script, annex=None, damage=False):
         ret += [annex]
     # Randomly add input witness
     if random.choice([True, False]):
-        for i in range(random.randint(1, 10)):
+        for _ in range(random.randint(1, 10)):
             ret = [random_bytes(random.randint(0, MAX_SCRIPT_ELEMENT_SIZE * 2))] + ret
     tx.wit.vtxinwit[input_index].scriptWitness.stack = ret
 
@@ -351,7 +351,7 @@ def spender_alwaysvalid(spenders, info, comment, err_msg=None, **kwargs):
     spk = info[0]
     addr = get_taproot_bech32(info)
 
-    def fn(t, i, u, v):
+    def fn(t, i, _, v):
         return spend_alwaysvalid(t, i, damage=not v, info=info, **kwargs)
 
     spenders.append(Spender(script=spk, address=addr, comment=comment, is_standard=False, sat_function=fn, err_msg=err_msg, sigops_weight=0))
@@ -361,8 +361,8 @@ def spender_two_paths_alwaysvalid(spenders, info, comment, standard, success, fa
     spk = info[0]
     addr = get_taproot_bech32(info)
 
-    def fn(t, i, u, v):
-        return spend_no_sig(t, i, u, info, (success if v else failure))
+    def fn(t, i, _, v):
+        return spend_no_sig(t, i, info, (success if v else failure))
 
     spenders.append(Spender(script=spk, address=addr, comment=comment, is_standard=standard, sat_function=fn, err_msg=err_msg, sigops_weight=0))
 
@@ -371,7 +371,7 @@ def spender_alwaysvalid_p2sh(spenders, info, comment, standard, script, err_msg=
     spk = get_p2sh_spk(info)
     addr = get_version1_p2sh(info)
 
-    def fn(t, i, u, v):
+    def fn(t, i, _, v):
         if v:
             t.vin[i].scriptSig = CScript([info[0]])
             # Empty control block is only invalid if we apply taproot rules,
@@ -450,7 +450,7 @@ class TaprootTest(BitcoinTestFramework):
         random.shuffle(spenders)
         num_spenders = len(spenders)
         utxos = []
-        while len(spenders):
+        while spenders:
             # Create the necessary outputs in multiple transactions, as sPKs may be repeated in test cases(which sendmany does not support)
             outputs = {}
             new_spenders = []
@@ -496,7 +496,7 @@ class TaprootTest(BitcoinTestFramework):
         block = self.nodes[0].getblock(self.lastblockhash)
         self.lastblockheight = block['height']
         self.lastblocktime = block['time']
-        while len(utxos):
+        while utxos:
             tx = CTransaction()
             tx.nVersion = random.choice([1, 2, random.randint(-0x80000000, 0x7fffffff)])
             min_sequence = (tx.nVersion != 1 and tx.nVersion != 0) * 0x80000000  # The minimum sequence number to disable relative locktime
@@ -813,7 +813,7 @@ class TaprootTest(BitcoinTestFramework):
 
         # Run 5 instances of every test, combined into transactions spending 2-5 inputs each.
         spenders = []
-        for i in range(5):
+        for _ in range(5):
             spenders += self.build_spenders()
         self.test_spenders(spenders, input_counts=[2, 3, 4, 5])
 

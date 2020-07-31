@@ -748,7 +748,7 @@ class TestFrameworkScript(unittest.TestCase):
         for value in values:
             self.assertEqual(CScriptNum.decode(CScriptNum.encode(CScriptNum(value))), value)
 
-def TaprootSignatureHash(txTo, spent_utxos, hash_type, input_index = 0, scriptpath = False, script = CScript(), codeseparator_pos = -1, annex = None, leaf_ver = LEAF_VERSION_TAPSCRIPT):
+def taproot_signature_hash(txTo, spent_utxos, hash_type, input_index = 0, scriptpath = False, script = CScript(), codeseparator_pos = -1, annex = None, leaf_ver = LEAF_VERSION_TAPSCRIPT):
     assert (len(txTo.vin) == len(spent_utxos))
     assert((hash_type >= 0 and hash_type <= 3) or (hash_type >= 0x81 and hash_type <= 0x83))
     assert (input_index < len(txTo.vin))
@@ -769,7 +769,7 @@ def TaprootSignatureHash(txTo, spent_utxos, hash_type, input_index = 0, scriptpa
         assert (annex[0] == ANNEX_TAG)
         spend_type |= 1
     if (scriptpath):
-        assert (len(script) > 0)
+        assert script
         assert (codeseparator_pos >= -1)
         spend_type |= 2
     ss += bytes([spend_type])
@@ -827,7 +827,7 @@ def taproot_construct(pubkey, scripts=None):
     if scripts is None:
         scripts = []
 
-    if len(scripts) == 0:
+    if not scripts:
         return (CScript([OP_1, pubkey]), bytes([0 for i in range(32)]), {})
 
     ret, h = taproot_tree_helper(scripts)
