@@ -55,7 +55,6 @@ void test_one_input(const std::vector<uint8_t>& buffer)
         assert(valid_incl_none);
     }
     (void)block.GetHash();
-    (void)block.ToString();
     (void)BlockMerkleRoot(block);
     if (!block.vtx.empty()) {
         // TODO: Avoid array index out of bounds error in BlockWitnessMerkleRoot

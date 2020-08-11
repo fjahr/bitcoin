@@ -34,7 +34,6 @@ void test_one_input(const std::vector<uint8_t>& buffer)
         assert(mut_block_header.IsNull());
         CBlock block{*block_header};
         assert(block.GetBlockHeader().GetHash() == block_header->GetHash());
-        (void)block.ToString();
         block.SetNull();
         assert(block.GetBlockHeader().GetHash() == mut_block_header.GetHash());
     }
