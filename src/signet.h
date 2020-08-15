@@ -33,10 +33,10 @@ private:
     template<class T1, class T2>
     SignetTxs(const T1& to_spend, const T2& to_sign) : m_to_spend{to_spend}, m_to_sign{to_sign} { }
 
-    static SignetTxs Create(const CBlock& block, const CScript& challenge);
+    static SignetTxs Create(const CBlock& block, const CScript& challenge, bool& success);
 
 public:
-    SignetTxs(const CBlock& block, const CScript& challenge) : SignetTxs(Create(block, challenge)) { }
+    SignetTxs(const CBlock& block, const CScript& challenge, bool& success) : SignetTxs(Create(block, challenge, success)) { }
 
     const CTransaction m_to_spend;
     const CTransaction m_to_sign;

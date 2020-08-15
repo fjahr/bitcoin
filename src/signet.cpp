@@ -59,7 +59,7 @@ static uint256 ComputeModifiedMerkleRoot(const CMutableTransaction& cb, const CB
     return ComputeMerkleRoot(std::move(leaves));
 }
 
-SignetTxs SignetTxs::Create(const CBlock& block, const CScript& challenge)
+SignetTxs SignetTxs::Create(const CBlock& block, const CScript& challenge, bool& success)
 {
     CMutableTransaction tx_to_spend;
     tx_to_spend.nVersion = 0;
@@ -85,37 +85,30 @@ SignetTxs SignetTxs::Create(const CBlock& block, const CScript& challenge)
     CScript& script = cb.vout.at(cidx).scriptPubKey;
 
     std::vector<uint8_t> data;
-    bool bad = false;
     if (!ExtractCommitmentSection(script, SIGNET_HEADER, data)) {
-        bad = true; // no commitment
-    } else {
-        try {
-            VectorReader v(SER_NETWORK, INIT_PROTO_VERSION, data, 0);
-            v >> tx_spending.vin[0].scriptSig;
-            if (!v.empty()) v >> tx_spending.vin[0].scriptWitness.stack;
-            if (!v.empty()) bad = true;
-        } catch (const std::exception&) {
-            bad = true;
-        }
+        return {tx_to_spend, tx_spending}; // unsuccessful return
     }
-    if (bad) {
-        // treat deserialization problems as not providing any signature and an unspendable input
-        tx_to_spend.vout[0].scriptPubKey = CScript(OP_RETURN);
-        tx_spending.vin[0].scriptSig.clear();
-        tx_spending.vin[0].scriptWitness.stack.clear();
-    } else {
-        uint256 signet_merkle = ComputeModifiedMerkleRoot(cb, block);
 
-        data.clear();
-        CVectorWriter writer(SER_NETWORK, INIT_PROTO_VERSION, data, 0);
-        writer << block.nVersion;
-        writer << block.hashPrevBlock;
-        writer << signet_merkle;
-        writer << block.nTime;
-        tx_to_spend.vin[0].scriptSig << data;
+    try {
+        VectorReader v(SER_NETWORK, INIT_PROTO_VERSION, data, 0);
+        v >> tx_spending.vin[0].scriptSig;
+        if (!v.empty()) v >> tx_spending.vin[0].scriptWitness.stack;
+        if (!v.empty()) return {tx_to_spend, tx_spending}; // unsuccessful return
+    } catch (const std::exception&) {
+        return {tx_to_spend, tx_spending}; // unsuccessful return
     }
+    uint256 signet_merkle = ComputeModifiedMerkleRoot(cb, block);
+
+    data.clear();
+    CVectorWriter writer(SER_NETWORK, INIT_PROTO_VERSION, data, 0);
+    writer << block.nVersion;
+    writer << block.hashPrevBlock;
+    writer << signet_merkle;
+    writer << block.nTime;
+    tx_to_spend.vin[0].scriptSig << data;
     tx_spending.vin[0].prevout = COutPoint(tx_to_spend.GetHash(), 0);
 
+    success = true;
     return {tx_to_spend, tx_spending};
 }
 
@@ -133,14 +126,15 @@ bool CheckBlockSolution(const CBlock& block, const Consensus::Params& consensusP
     }
 
     const CScript challenge(consensusParams.signet_challenge.begin(), consensusParams.signet_challenge.end());
-    const SignetTxs signet_txs(block, challenge);
+
+    bool success{false};
+    const SignetTxs signet_txs(block, challenge, success);
+    if (success == false) {
+        return error("CheckBlockSolution: Errors in block (block solution missing)");
+    }
 
     const CScript& scriptSig = signet_txs.m_to_sign.vin[0].scriptSig;
     const CScriptWitness& witness = signet_txs.m_to_sign.vin[0].scriptWitness;
-
-    if (scriptSig.empty() && witness.stack.empty()) {
-        return error("CheckBlockSolution: Errors in block (block solution missing)");
-    }
 
     TransactionSignatureChecker sigcheck(&signet_txs.m_to_sign, /*nIn=*/ 0, /*amount=*/ signet_txs.m_to_spend.vout[0].nValue);
 
