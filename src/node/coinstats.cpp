@@ -15,6 +15,7 @@
 
 #include <map>
 
+// Database-independent, meaningless metric indicating the UTXO set size
 uint64_t GetBogoSize(const CScript& scriptPubKey)
 {
     return 32 /* txid */ +

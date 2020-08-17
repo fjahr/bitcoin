@@ -21,12 +21,21 @@ struct DBVal {
     CAmount total_amount;
     uint64_t disk_size;
 
+    CAmount unspendable_amount;
+    CAmount total_prevout_spent_amount;
+    CAmount total_new_outputs_ex_coinbase_amount;
+    CAmount coinbase_amount;
+
     SERIALIZE_METHODS(DBVal, obj)
     {
         READWRITE(obj.transaction_output_count);
         READWRITE(obj.bogo_size);
         READWRITE(obj.total_amount);
         READWRITE(obj.disk_size);
+        READWRITE(obj.unspendable_amount);
+        READWRITE(obj.total_prevout_spent_amount);
+        READWRITE(obj.total_new_outputs_ex_coinbase_amount);
+        READWRITE(obj.coinbase_amount);
     }
 };
 
@@ -99,6 +108,11 @@ bool CoinStatsIndex::Init()
         m_bogo_size = 0;
         m_total_amount = 0;
         m_disk_size = 0;
+
+        m_unspendable_amount = 0;
+        m_total_prevout_spent_amount = 0;
+        m_total_new_outputs_ex_coinbase_amount = 0;
+        m_coinbase_amount = 0;
     }
 
     return BaseIndex::Init();
@@ -107,8 +121,11 @@ bool CoinStatsIndex::Init()
 bool CoinStatsIndex::WriteBlock(const CBlock& block, const CBlockIndex* pindex)
 {
     CBlockUndo block_undo;
+    CAmount block_subsidy = GetBlockSubsidy(pindex->nHeight, Params().GetConsensus());
+    CAmount total_in = 0;
+    CAmount total_out = 0;
+    m_unspendable_amount = 0;
 
-    // Ignore genesis block
     if (pindex->nHeight > 0) {
         if (!UndoReadFromDisk(block_undo, pindex)) {
             return false;
@@ -134,6 +151,7 @@ bool CoinStatsIndex::WriteBlock(const CBlock& block, const CBlockIndex* pindex)
 
             // Skip duplicate txid coinbase transactions (BIP30).
             if (is_bip30_block && tx->IsCoinBase()) {
+                m_unspendable_amount += block_subsidy;
                 continue;
             }
 
@@ -141,8 +159,13 @@ bool CoinStatsIndex::WriteBlock(const CBlock& block, const CBlockIndex* pindex)
                 const CTxOut& out = tx->vout[j];
                 Coin coin = Coin(out, pindex->nHeight, tx->IsCoinBase());
 
+                total_out += coin.out.nValue;
+
                 // Skip unspendable coins
-                if (coin.out.scriptPubKey.IsUnspendable()) continue;
+                if (coin.out.scriptPubKey.IsUnspendable()) {
+                    m_unspendable_amount += coin.out.nValue;
+                    continue;
+                }
 
                 m_transaction_output_count++;
                 m_total_amount += coin.out.nValue;
@@ -156,11 +179,28 @@ bool CoinStatsIndex::WriteBlock(const CBlock& block, const CBlockIndex* pindex)
                 for (size_t j = 0; j < tx_undo.vprevout.size(); ++j) {
                     Coin coin = tx_undo.vprevout[j];
 
+                    total_in += coin.out.nValue;
+
                     m_transaction_output_count--;
                     m_total_amount -= coin.out.nValue;
                     m_bogo_size -= GetBogoSize(coin.out.scriptPubKey);
                 }
             }
+        }
+    } else {
+        // Genesis block
+        m_unspendable_amount += block_subsidy;
+    }
+
+    m_coinbase_amount = block_subsidy;
+    m_total_prevout_spent_amount = total_in;
+
+    if (pindex->nHeight > 0) {
+        m_total_new_outputs_ex_coinbase_amount = total_out - block_subsidy;
+
+        // Unclaimed block rewards
+        if ((total_in + block_subsidy) > total_out) {
+            m_unspendable_amount += (total_in + block_subsidy - total_out);
         }
     }
 
@@ -173,6 +213,11 @@ bool CoinStatsIndex::WriteBlock(const CBlock& block, const CBlockIndex* pindex)
     value.second.transaction_output_count = m_transaction_output_count;
     value.second.bogo_size = m_bogo_size;
     value.second.total_amount = m_total_amount;
+
+    value.second.unspendable_amount = m_unspendable_amount;
+    value.second.total_prevout_spent_amount = m_total_prevout_spent_amount;
+    value.second.total_new_outputs_ex_coinbase_amount = m_total_new_outputs_ex_coinbase_amount;
+    value.second.coinbase_amount = m_coinbase_amount;
 
     if (!m_db->Write(DBHeightKey(pindex->nHeight), value)) {
         return false;
@@ -275,6 +320,11 @@ bool CoinStatsIndex::LookupStats(const CBlockIndex* block_index, CCoinsStats& co
     coins_stats.nTotalAmount = entry.total_amount;
     coins_stats.nDiskSize = entry.disk_size;
 
+    coins_stats.unspendable_amount = entry.unspendable_amount;
+    coins_stats.total_prevout_spent_amount = entry.total_prevout_spent_amount;
+    coins_stats.total_new_outputs_ex_coinbase_amount = entry.total_new_outputs_ex_coinbase_amount;
+    coins_stats.coinbase_amount = entry.coinbase_amount;
+
     return true;
 }
 
@@ -304,6 +354,11 @@ bool CoinStatsIndex::ReverseBlock(const CBlock& block, const CBlockIndex* pindex
     m_total_amount = read_out.second.total_amount;
     m_bogo_size = read_out.second.bogo_size;
     m_disk_size = read_out.second.disk_size;
+
+    m_unspendable_amount = read_out.second.unspendable_amount;
+    m_total_prevout_spent_amount = read_out.second.total_prevout_spent_amount;
+    m_total_new_outputs_ex_coinbase_amount = read_out.second.total_new_outputs_ex_coinbase_amount;
+    m_coinbase_amount = read_out.second.coinbase_amount;
 
     return true;
 }
