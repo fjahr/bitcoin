@@ -24,10 +24,11 @@ private:
     CAmount m_total_amount;
     uint64_t m_disk_size;
 
-    CAmount m_unspendable_amount;
-    CAmount m_total_prevout_spent_amount;
-    CAmount m_total_new_outputs_ex_coinbase_amount;
-    CAmount m_coinbase_amount;
+    CAmount m_total_unspendable_amount;
+    CAmount m_block_unspendable_amount;
+    CAmount m_block_prevout_spent_amount;
+    CAmount m_block_new_outputs_ex_coinbase_amount;
+    CAmount m_block_coinbase_amount;
 
     bool ReverseBlock(const CBlock& block, const CBlockIndex* pindex);
 protected:

@@ -1018,6 +1018,7 @@ static UniValue gettxoutsetinfo(const JSONRPCRequest& request)
                         {RPCResult::Type::STR_HEX, "hash_serialized_2", "The serialized hash (only present if 'hash_serialized_2' hash_type is chosen)"},
                         {RPCResult::Type::NUM, "disk_size", "The estimated size of the chainstate on disk"},
                         {RPCResult::Type::STR_AMOUNT, "total_amount", "The total amount of coins in the UTXO set"},
+                        {RPCResult::Type::STR_AMOUNT, "total_unspendable_amount", "The total amount of coins excluded from the UTXO set"},
                         {RPCResult::Type::OBJ, "block_info", "Info on total amount (only for verbose = true)",
                         {
                             {RPCResult::Type::STR_AMOUNT, "unspendable_amount", ""},
@@ -1031,10 +1032,14 @@ static UniValue gettxoutsetinfo(const JSONRPCRequest& request)
                     HelpExampleCli("gettxoutsetinfo", R"("none")") +
                     HelpExampleCli("gettxoutsetinfo", R"("none" 1000)") +
                     HelpExampleCli("gettxoutsetinfo", R"("none" "00000000c937983704a73af28acdec37b049d214adbda81d7e2a3dd146f6ed09")") +
+                    HelpExampleCli("gettxoutsetinfo", R"("none" 1000 true)") +
+                    HelpExampleCli("gettxoutsetinfo", R"("none" "00000000c937983704a73af28acdec37b049d214adbda81d7e2a3dd146f6ed09" true)") +
                     HelpExampleRpc("gettxoutsetinfo", "") +
                     HelpExampleRpc("gettxoutsetinfo", R"("none")") +
                     HelpExampleRpc("gettxoutsetinfo", R"("none", 1000)") +
-                    HelpExampleRpc("gettxoutsetinfo", R"("none", "00000000c937983704a73af28acdec37b049d214adbda81d7e2a3dd146f6ed09")")
+                    HelpExampleRpc("gettxoutsetinfo", R"("none", "00000000c937983704a73af28acdec37b049d214adbda81d7e2a3dd146f6ed09")") +
+                    HelpExampleRpc("gettxoutsetinfo", R"("none", 1000, true)") +
+                    HelpExampleRpc("gettxoutsetinfo", R"("none", "00000000c937983704a73af28acdec37b049d214adbda81d7e2a3dd146f6ed09", true)")
                 },
             }.Check(request);
 
@@ -1072,11 +1077,12 @@ static UniValue gettxoutsetinfo(const JSONRPCRequest& request)
         ret.pushKV("disk_size", stats.nDiskSize);
         ret.pushKV("total_amount", ValueFromAmount(stats.nTotalAmount));
         if (verbose) {
+            ret.pushKV("total_unspendable_amount", ValueFromAmount(stats.total_unspendable_amount));
             UniValue block_info(UniValue::VOBJ);
-            block_info.pushKV("unspendable_amount", ValueFromAmount(stats.unspendable_amount));
-            block_info.pushKV("total_prevout_spent_amount", ValueFromAmount(stats.total_prevout_spent_amount));
-            block_info.pushKV("total_new_outputs_ex_coinbase_amount", ValueFromAmount(stats.total_new_outputs_ex_coinbase_amount));
-            block_info.pushKV("coinbase_amount", ValueFromAmount(stats.coinbase_amount));
+            block_info.pushKV("unspendable_amount", ValueFromAmount(stats.block_unspendable_amount));
+            block_info.pushKV("total_prevout_spent_amount", ValueFromAmount(stats.block_prevout_spent_amount));
+            block_info.pushKV("total_new_outputs_ex_coinbase_amount", ValueFromAmount(stats.block_new_outputs_ex_coinbase_amount));
+            block_info.pushKV("coinbase_amount", ValueFromAmount(stats.block_coinbase_amount));
             ret.pushKV("block_info", block_info);
         }
     } else {
