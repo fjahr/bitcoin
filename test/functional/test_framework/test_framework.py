@@ -599,9 +599,15 @@ class BitcoinTestFramework(metaclass=BitcoinTestMetaClass):
             "".join("\n  {!r}".format(m) for m in pool),
         ))
 
+    def sync_validation_interface_queues(self, nodes=None):
+        nodes = nodes or self.nodes
+        for node in nodes:
+            node.syncwithvalidationinterfacequeue()
+
     def sync_all(self, nodes=None):
         self.sync_blocks(nodes)
         self.sync_mempools(nodes)
+        self.sync_validation_interface_queues(nodes)
 
     def wait_until(self, test_function, timeout=60):
         return wait_until_helper(test_function, timeout=timeout, timeout_factor=self.options.timeout_factor)
