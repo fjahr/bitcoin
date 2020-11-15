@@ -168,8 +168,11 @@ BOOST_AUTO_TEST_CASE(chainstatemanager_rebalance_caches)
     BOOST_CHECK_CLOSE(c2.m_coinsdb_cache_size_bytes, max_cache * 0.95, 1);
 }
 
+auto NoMaleation = [](CAutoFile& file, SnapshotMetadata& meta){};
+
+template<typename F = decltype(NoMaleation)>
 static bool
-CreateAndActivateUTXOSnapshot(NodeContext& node, const fs::path root)
+CreateAndActivateUTXOSnapshot(NodeContext& node, const fs::path root, F maleation = NoMaleation)
 {
     // Write out a snapshot to the test's tempdir.
     //
@@ -189,6 +192,8 @@ CreateAndActivateUTXOSnapshot(NodeContext& node, const fs::path root)
     CAutoFile auto_infile{infile, SER_DISK, CLIENT_VERSION};
     SnapshotMetadata metadata;
     auto_infile >> metadata;
+
+    maleation(auto_infile, metadata);
 
     return node.chainman->ActivateSnapshot(auto_infile, metadata, /*in_memory*/ true);
 }
@@ -230,6 +235,27 @@ BOOST_FIXTURE_TEST_CASE(chainstatemanager_activate_snapshot, TestChain100Determi
     mineBlocks(10);
     initial_size += 10;
     initial_total_coins += 10;
+
+    // Should not load maleated Snapshots
+    BOOST_REQUIRE(!CreateAndActivateUTXOSnapshot(m_node, m_path_root, [](CAutoFile& auto_infile, SnapshotMetadata& metadata){
+        // A UTXO is missing but count is correct
+        metadata.m_coins_count -= 1;
+
+        COutPoint outpoint;
+        Coin coin;
+
+        auto_infile >> outpoint;
+        auto_infile >> coin;
+    }));
+    // This currently raises an error
+    // BOOST_REQUIRE(!CreateAndActivateUTXOSnapshot(m_node, m_path_root, [](CAutoFile& auto_infile, SnapshotMetadata& metadata){
+    //     // Coins count is larger than coins in file
+    //     metadata.m_coins_count += 1;
+    // }));
+    BOOST_REQUIRE(!CreateAndActivateUTXOSnapshot(m_node, m_path_root, [](CAutoFile& auto_infile, SnapshotMetadata& metadata){
+        // Coins count is smaller than coins in file
+        metadata.m_coins_count -= 1;
+    }));
 
     BOOST_REQUIRE(CreateAndActivateUTXOSnapshot(m_node, m_path_root));
 
