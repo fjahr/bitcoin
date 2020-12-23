@@ -355,6 +355,12 @@ public:
     //! Efficiently find an ancestor of this block.
     CBlockIndex* GetAncestor(int height);
     const CBlockIndex* GetAncestor(int height) const;
+
+    //! Identifies blocks that overwrote an existing coinbase output in the UTXO set (see BIP30)
+    bool IsBIP30Repeat() const;
+
+    //! Identifies blocks which coinbase output was subsequently overwritten in the UTXO set (see BIP30)
+    bool IsBIP30Unspendable() const;
 };
 
 arith_uint256 GetBlockProof(const CBlockIndex& block);
