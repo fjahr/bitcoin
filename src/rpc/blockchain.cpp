@@ -2427,7 +2427,6 @@ static RPCHelpMan scanblocks()
         const CBlockIndex* start_index = block; // for remembering the start of a blockfilter range
         std::vector<BlockFilter> filters;
         const CBlockIndex* start_block = block; // for progress reporting
-        const CBlockIndex* last_scanned_block = block;
         g_scanfilter_should_abort_scan = false;
         g_scanfilter_progress = 0;
         g_scanfilter_progress_height = start_block->nHeight;
@@ -2465,11 +2464,10 @@ static RPCHelpMan scanblocks()
                 }
                 g_scanfilter_progress_height = block->nHeight;
             }
-            last_scanned_block = block;
             block = next;
         }
         ret.pushKV("from_height", start_block->nHeight);
-        ret.pushKV("to_height", last_scanned_block->nHeight);
+        ret.pushKV("to_height", g_scanfilter_progress_height);
         ret.pushKV("relevant_blocks", blocks);
     }
     else {
