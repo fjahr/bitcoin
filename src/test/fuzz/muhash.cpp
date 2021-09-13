@@ -17,50 +17,55 @@ FUZZ_TARGET(muhash)
 
     MuHash3072 muhash;
 
-    // Test that MuHash result is consistent independent of order of operations
     muhash.Insert(data);
     muhash.Insert(data2);
 
-    {
-        uint256 out;
-        muhash.Finalize(out);
-        {
-            MuHash3072 muhash_inverse_order;
-            muhash_inverse_order = MuHash3072();
-            muhash_inverse_order.Insert(data2);
-            muhash_inverse_order.Insert(data);
-            uint256 out2;
-            muhash_inverse_order.Finalize(out2);
-            assert(out == out2);
-        }
-        {
+    CallOneOf(
+        fuzzed_data_provider,
+        [&] {
+            // Test that MuHash result is consistent independent of order of operations
+            uint256 out;
+            muhash.Finalize(out);
+            CallOneOf(
+                fuzzed_data_provider,
+                [&] {
+                    MuHash3072 muhash_inverse_order;
+                    muhash_inverse_order = MuHash3072();
+                    muhash_inverse_order.Insert(data2);
+                    muhash_inverse_order.Insert(data);
+                    uint256 out2;
+                    muhash_inverse_order.Finalize(out2);
+                    assert(out == out2);
+                },
+                [&] {
+                    MuHash3072 muhash3;
+                    muhash3 *= muhash;
+                    uint256 out3;
+                    muhash3.Finalize(out3);
+                    assert(out == out3);
+                });
+        },
+        [&] {
+            // Test that removing all added elements brings the object back to it's initial state
             MuHash3072 muhash3;
             muhash3 *= muhash;
-            uint256 out3;
-            muhash3.Finalize(out3);
-            assert(out == out3);
-        }
-    }
-    // Test that removing all added elements brings the object back to it's initial state
-    {
-        MuHash3072 muhash3;
-        muhash3 *= muhash;
-        uint256 out;
-        muhash /= muhash;
-        muhash.Finalize(out);
-
-        {
-            uint256 out2;
-            MuHash3072 muhash2;
-            muhash2.Finalize(out2);
-            assert(out == out2);
-        }
-        {
-            uint256 out3;
-            muhash3.Remove(data);
-            muhash3.Remove(data2);
-            muhash3.Finalize(out3);
-            assert(out == out3);
-        }
-    }
+            uint256 out;
+            muhash /= muhash;
+            muhash.Finalize(out);
+            CallOneOf(
+                fuzzed_data_provider,
+                [&] {
+                    uint256 out2;
+                    MuHash3072 muhash2;
+                    muhash2.Finalize(out2);
+                    assert(out == out2);
+                },
+                [&] {
+                    uint256 out3;
+                    muhash3.Remove(data);
+                    muhash3.Remove(data2);
+                    muhash3.Finalize(out3);
+                    assert(out == out3);
+                });
+        });
 }
