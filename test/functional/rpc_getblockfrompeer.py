@@ -13,14 +13,19 @@ from test_framework.util import (
 
 class GetBlockFromPeerTest(BitcoinTestFramework):
     def set_test_params(self):
-        self.num_nodes = 2
+        self.num_nodes = 3
+        self.extra_args = [
+            [],
+            [],
+            ["-fastprune", "-prune=1"]
+        ]
 
     def setup_network(self):
         self.setup_nodes()
 
-    def check_for_block(self, hash):
+    def check_for_block(self, node, hash):
         try:
-            self.nodes[0].getblock(hash)
+            node.getblock(hash)
             return True
         except JSONRPCException:
             return False
@@ -37,7 +42,7 @@ class GetBlockFromPeerTest(BitcoinTestFramework):
 
         self.log.info("Connect nodes to sync headers")
         self.connect_nodes(0, 1)
-        self.sync_blocks()
+        self.sync_blocks(self.nodes[0:1])
 
         self.log.info("Node 0 should only have the header for node 1's block 3")
         for x in self.nodes[0].getchaintips():
@@ -64,13 +69,33 @@ class GetBlockFromPeerTest(BitcoinTestFramework):
 
         self.log.info("Successful fetch")
         result = self.nodes[0].getblockfrompeer(short_tip, peer_0_peer_1_id)
-        self.wait_until(lambda: self.check_for_block(short_tip), timeout=1)
+        self.wait_until(lambda: self.check_for_block(self.nodes[0], short_tip), timeout=1)
         assert(not "warnings" in result)
 
         self.log.info("Don't fetch blocks we already have")
         result = self.nodes[0].getblockfrompeer(short_tip, peer_0_peer_1_id)
         assert("warnings" in result)
         assert_equal(result["warnings"], "Block already downloaded")
+
+        self.log.info("Connect pruned node")
+        # We need to generate more blocks to be able to prune
+        self.generate(self.nodes[0], 400)
+        self.connect_nodes(0, 2)
+        self.sync_blocks()
+        pruneheight = self.nodes[2].pruneblockchain(300)
+        assert_equal(pruneheight, 248)
+        # Ensure the block is actually pruned
+        pruned_block = self.nodes[0].getblockhash(2)
+        assert_raises_rpc_error(-1, "Block not available (pruned data)", self.nodes[2].getblock, pruned_block)
+
+        self.log.info("Fetch pruned block")
+        peers = self.nodes[2].getpeerinfo()
+        assert_equal(len(peers), 1)
+        peer_2_peer_0_id = peers[0]["id"]
+        result = self.nodes[2].getblockfrompeer(pruned_block, peer_2_peer_0_id)
+        self.wait_until(lambda: self.check_for_block(self.nodes[2], pruned_block), timeout=1)
+        assert(not "warnings" in result)
+
 
 if __name__ == '__main__':
     GetBlockFromPeerTest().main()
