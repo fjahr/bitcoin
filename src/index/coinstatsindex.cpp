@@ -382,6 +382,31 @@ bool CoinStatsIndex::CommitInternal(CDBBatch& batch)
     // DB_MUHASH should always be committed in a batch together with DB_BEST_BLOCK
     // to prevent an inconsistent state of the DB.
     batch.Write(DB_MUHASH, m_muhash);
+
+    const CBlockIndex* pindex{CurrentIndex()};
+    std::pair<uint256, DBVal> value;
+    if (!m_db->Read(DBHeightKey(pindex->nHeight), value)) {
+        value.first = pindex->GetBlockHash();
+        value.second.transaction_output_count = m_transaction_output_count;
+        value.second.bogo_size = m_bogo_size;
+        value.second.total_amount = m_total_amount;
+        value.second.total_subsidy = m_total_subsidy;
+        value.second.total_unspendable_amount = m_total_unspendable_amount;
+        value.second.total_prevout_spent_amount = m_total_prevout_spent_amount;
+        value.second.total_new_outputs_ex_coinbase_amount = m_total_new_outputs_ex_coinbase_amount;
+        value.second.total_coinbase_amount = m_total_coinbase_amount;
+        value.second.total_unspendables_genesis_block = m_total_unspendables_genesis_block;
+        value.second.total_unspendables_bip30 = m_total_unspendables_bip30;
+        value.second.total_unspendables_scripts = m_total_unspendables_scripts;
+        value.second.total_unspendables_unclaimed_rewards = m_total_unspendables_unclaimed_rewards;
+
+        uint256 out;
+        m_muhash.Finalize(out);
+        value.second.muhash = out;
+
+        batch.Write(DBHeightKey(pindex->nHeight), value);
+    }
+
     return BaseIndex::CommitInternal(batch);
 }
 
