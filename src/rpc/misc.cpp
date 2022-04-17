@@ -757,7 +757,7 @@ static RPCHelpMan getindexinfo()
                         {
                             RPCResult::Type::OBJ, "name", "The name of the index",
                             {
-                                {RPCResult::Type::BOOL, "synced", "Whether the index is synced or not"},
+                                {RPCResult::Type::BOOL, "synced", "Whether the index is synced or not. Note that this will latch to true immediately if the node is started with an empty datadir."},
                                 {RPCResult::Type::NUM, "best_block_height", "The block height to which the index is synced"},
                             }
                         },
