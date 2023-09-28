@@ -1591,8 +1591,10 @@ bool AppInitMain(NodeContext& node, interfaces::BlockAndHeaderTipInfo* tip_info)
         node.indexes.emplace_back(g_coin_stats_index.get());
     }
 
+    Consensus::Params consensus = Params().GetConsensus();
+    const int sp_start_height = consensus.vDeployments[Consensus::DEPLOYMENT_TAPROOT].min_activation_height;
     if (args.GetBoolArg("-silentpaymentindex", DEFAULT_SILENT_PAYMENT_INDEX)) {
-        g_silent_payment_index = std::make_unique<SilentPaymentIndex>(interfaces::MakeChain(node), cache_sizes.tx_index, false, fReindex);
+        g_silent_payment_index = std::make_unique<SilentPaymentIndex>(interfaces::MakeChain(node), cache_sizes.tx_index, false, fReindex, sp_start_height);
         node.indexes.emplace_back(g_silent_payment_index.get());
     }
 

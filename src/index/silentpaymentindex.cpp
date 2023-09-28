@@ -39,8 +39,8 @@ bool SilentPaymentIndex::DB::WriteSilentPayments(const std::pair<uint256, std::v
     return WriteBatch(batch);
 }
 
-SilentPaymentIndex::SilentPaymentIndex(std::unique_ptr<interfaces::Chain> chain, size_t n_cache_size, bool f_memory, bool f_wipe)
-    : BaseIndex(std::move(chain), "silentpaymentindex"), m_db(std::make_unique<SilentPaymentIndex::DB>(n_cache_size, f_memory, f_wipe))
+SilentPaymentIndex::SilentPaymentIndex(std::unique_ptr<interfaces::Chain> chain, size_t n_cache_size, bool f_memory, bool f_wipe, int start_height)
+    : BaseIndex(std::move(chain), "silentpaymentindex", start_height), m_db(std::make_unique<SilentPaymentIndex::DB>(n_cache_size, f_memory, f_wipe))
 {}
 
 SilentPaymentIndex::~SilentPaymentIndex() {}
@@ -97,12 +97,6 @@ bool SilentPaymentIndex::CustomAppend(const interfaces::BlockInfo& block)
     if (block.height == 0) return true;
 
     assert(block.data);
-
-    Consensus::Params consensus = Params().GetConsensus();
-
-    if (block.height < consensus.vDeployments[Consensus::DEPLOYMENT_TAPROOT].min_activation_height) {
-        return true;
-    }
 
     std::vector<std::pair<uint256, CPubKey>> items;
 

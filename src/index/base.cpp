@@ -68,8 +68,8 @@ void BaseIndex::DB::WriteBestBlock(CDBBatch& batch, const CBlockLocator& locator
     batch.Write(DB_BEST_BLOCK, locator);
 }
 
-BaseIndex::BaseIndex(std::unique_ptr<interfaces::Chain> chain, std::string name)
-    : m_chain{std::move(chain)}, m_name{std::move(name)} {}
+BaseIndex::BaseIndex(std::unique_ptr<interfaces::Chain> chain, std::string name, int start_height)
+    : m_chain{std::move(chain)}, m_name{std::move(name)}, m_start_height{std::move(start_height)} {}
 
 BaseIndex::~BaseIndex()
 {
@@ -119,11 +119,14 @@ bool BaseIndex::Init()
     return true;
 }
 
-static const CBlockIndex* NextSyncBlock(const CBlockIndex* pindex_prev, CChain& chain) EXCLUSIVE_LOCKS_REQUIRED(cs_main)
+static const CBlockIndex* NextSyncBlock(const CBlockIndex* pindex_prev, CChain& chain, int start_height) EXCLUSIVE_LOCKS_REQUIRED(cs_main)
 {
     AssertLockHeld(cs_main);
 
     if (!pindex_prev) {
+        if (start_height > 0) {
+            return chain[start_height];
+        }
         return chain.Genesis();
     }
 
@@ -153,7 +156,7 @@ void BaseIndex::ThreadSync()
 
             {
                 LOCK(cs_main);
-                const CBlockIndex* pindex_next = NextSyncBlock(pindex, m_chainstate->m_chain);
+                const CBlockIndex* pindex_next = NextSyncBlock(pindex, m_chainstate->m_chain, m_start_height);
                 if (!pindex_next) {
                     SetBestBlockIndex(pindex);
                     m_synced = true;

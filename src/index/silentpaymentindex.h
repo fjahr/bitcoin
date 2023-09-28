@@ -45,7 +45,7 @@ protected:
     BaseIndex::DB& GetDB() const override;
 public:
 
-    explicit SilentPaymentIndex(std::unique_ptr<interfaces::Chain> chain, size_t n_cache_size, bool f_memory = false, bool f_wipe = false);
+    explicit SilentPaymentIndex(std::unique_ptr<interfaces::Chain> chain, size_t n_cache_size, bool f_memory = false, bool f_wipe = false, int start_height = 0);
 
     // Destructor is declared because this class contains a unique_ptr to an incomplete type.
     virtual ~SilentPaymentIndex() override;
