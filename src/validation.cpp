@@ -5489,6 +5489,7 @@ bool ChainstateManager::PopulateAndValidateSnapshot(
             au_data.hash_serialized.ToString(), maybe_stats->hashSerialized.ToString());
         return false;
     }
+    LogPrintf("[snapshot] snapshot content hash matched: %s\n", maybe_stats->hashSerialized.ToString());
 
     snapshot_chainstate.m_chain.SetTip(*snapshot_start_block);
 

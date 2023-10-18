@@ -95,13 +95,34 @@ class AssumeutxoTest(BitcoinTestFramework):
         cases = [
             [b"\xff" * 32, 0, "29926acf3ac81f908cf4f22515713ca541c08bb0f0ef1b2c3443a007134d69b8"], # wrong outpoint hash
             [(1).to_bytes(4, "little"), 32, "798266c2e1f9a98fe5ce61f5951cbf47130743f3764cf3cbc254be129142cf9d"], # wrong outpoint index
+            # Original content, doesn't raise exception
+            # [b"\x82", 36, "798266c2e1f9a98fe5ce61f5951cbf47130743f3764cf3cbc254be129142cf9d"],
+
+            # Altered content, that also doesn't raise exception
+            [b"\x80", 36, "798266c2e1f9a98fe5ce61f5951cbf47130743f3764cf3cbc254be129142cf9d"],
+            # [b"\x81", 36, "798266c2e1f9a98fe5ce61f5951cbf47130743f3764cf3cbc254be129142cf9d"],
+            # [b"\x83", 36, "798266c2e1f9a98fe5ce61f5951cbf47130743f3764cf3cbc254be129142cf9d"],
+
+            # This gives a "bad snapshot data after deserializing 0 coins" error
+            # [b"\x84", 36, "798266c2e1f9a98fe5ce61f5951cbf47130743f3764cf3cbc254be129142cf9d"],
+            # This gives a "bad snapshot data after deserializing 1 coins" error
+            # [b"\x79", 36, "798266c2e1f9a98fe5ce61f5951cbf47130743f3764cf3cbc254be129142cf9d"],
         ]
+
+        import hashlib
+        def file_sha256(file_path):
+            sha256_hash = hashlib.sha256()
+            with open(file_path, "rb") as f:
+                for byte_block in iter(lambda: f.read(4096), b""):
+                    sha256_hash.update(byte_block)
+            return sha256_hash.hexdigest()
 
         for content, offset, wrong_hash in cases:
             with open(bad_snapshot_path, "wb") as f:
                 f.write(valid_snapshot_contents[:(32 + 8 + offset)])
                 f.write(content)
                 f.write(valid_snapshot_contents[(32 + 8 + offset + len(content)):])
+                print(f"Hash of bad snapshot file: {file_sha256(bad_snapshot_path)}")
             expected_log(f"[snapshot] bad snapshot content hash: expected ef45ccdca5898b6c2145e4581d2b88c56564dd389e4bd75a1aaf6961d3edd3c0, got {wrong_hash}")
 
     def run_test(self):
