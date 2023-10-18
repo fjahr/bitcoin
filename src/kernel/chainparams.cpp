@@ -494,14 +494,14 @@ public:
         m_assumeutxo_data = {
             {
                 .height = 110,
-                .hash_serialized = AssumeutxoHash{uint256S("0x1ebbf5850204c0bdb15bf030f47c7fe91d45c44c712697e4509ba67adb01c618")},
+                .hash_serialized = AssumeutxoHash{uint256S("0x1b39d179ac2f7cbe7c51a01b214802998b1d9e1a19b0c0486a9523cb7d78a44b")},
                 .nChainTx = 111,
                 .blockhash = uint256S("0x696e92821f65549c7ee134edceeeeaaa4105647a3c4fd9f298c0aec0ab50425c")
             },
             {
                 // For use by test/functional/feature_assumeutxo.py
                 .height = 299,
-                .hash_serialized = AssumeutxoHash{uint256S("0xef45ccdca5898b6c2145e4581d2b88c56564dd389e4bd75a1aaf6961d3edd3c0")},
+                .hash_serialized = AssumeutxoHash{uint256S("0xb94d99ad6da8cd07d32df8e9b951a98f72ad5f9a783ab8ecb784c614eca88a1b")},
                 .nChainTx = 300,
                 .blockhash = uint256S("0x7e0517ef3ea6ecbed9117858e42eedc8eb39e8698a38dcbd1b3962a283233f4c")
             },

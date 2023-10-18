@@ -74,7 +74,7 @@ static void ApplyHash(HashWriter& ss, const uint256& hash, const std::map<uint32
     for (auto it = outputs.begin(); it != outputs.end(); ++it) {
         if (it == outputs.begin()) {
             ss << hash;
-            ss << VARINT(it->second.nHeight * 2 + it->second.fCoinBase ? 1u : 0u);
+            ss << VARINT(it->second.nHeight * 2 + (it->second.fCoinBase ? 1u : 0u));
         }
 
         ss << VARINT(it->first + 1);

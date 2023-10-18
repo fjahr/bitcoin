@@ -93,8 +93,10 @@ class AssumeutxoTest(BitcoinTestFramework):
 
         self.log.info("  - snapshot file with alternated UTXO data")
         cases = [
-            [b"\xff" * 32, 0, "29926acf3ac81f908cf4f22515713ca541c08bb0f0ef1b2c3443a007134d69b8"], # wrong outpoint hash
-            [(1).to_bytes(4, "little"), 32, "798266c2e1f9a98fe5ce61f5951cbf47130743f3764cf3cbc254be129142cf9d"], # wrong outpoint index
+            [b"\xff" * 32, 0, "f1db43faece580d1f1de48fcd7dc8554f672120d1266bacc17d3462223f4322d"], # wrong outpoint hash
+            [(1).to_bytes(4, "little"), 32, "1e84caae90fcb123b313beed95b37de1c0e78d4ad3689b035e9bdb041177fca0"], # wrong outpoint index
+            [b"\x81", 36, "e041ba70b69e7fb5e0ad9a9262f4a79d22c5e62058d2059df5e56ff1243a82be"],
+            [b"\x83", 36, "ba11353103b4d6fd8428b8dbe1a9ed858f40ca28b5b532b241dfbecb7f84eb40"],
         ]
 
         for content, offset, wrong_hash in cases:
@@ -102,7 +104,7 @@ class AssumeutxoTest(BitcoinTestFramework):
                 f.write(valid_snapshot_contents[:(32 + 8 + offset)])
                 f.write(content)
                 f.write(valid_snapshot_contents[(32 + 8 + offset + len(content)):])
-            expected_log(f"[snapshot] bad snapshot content hash: expected ef45ccdca5898b6c2145e4581d2b88c56564dd389e4bd75a1aaf6961d3edd3c0, got {wrong_hash}")
+            expected_log(f"[snapshot] bad snapshot content hash: expected b94d99ad6da8cd07d32df8e9b951a98f72ad5f9a783ab8ecb784c614eca88a1b, got {wrong_hash}")
 
     def run_test(self):
         """
@@ -149,7 +151,7 @@ class AssumeutxoTest(BitcoinTestFramework):
 
         assert_equal(
             dump_output['txoutset_hash'],
-            'ef45ccdca5898b6c2145e4581d2b88c56564dd389e4bd75a1aaf6961d3edd3c0')
+            'b94d99ad6da8cd07d32df8e9b951a98f72ad5f9a783ab8ecb784c614eca88a1b')
         assert_equal(dump_output['nchaintx'], 300)
         assert_equal(n0.getblockchaininfo()["blocks"], SNAPSHOT_BASE_HEIGHT)
 
