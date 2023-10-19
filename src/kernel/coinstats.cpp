@@ -57,17 +57,19 @@ DataStream TxOutSer(const COutPoint& outpoint, const Coin& coin)
     return ss;
 }
 
-static void ApplyHashInternal(HashWriter& ss, const Span<const uint8_t> serialized_coin)
+static void ApplyHashInternal(HashWriter& ss, const COutPoint& outpoint, const Coin& coin)
 {
-    ss << serialized_coin;
+    ss << outpoint;
+    ss << static_cast<uint32_t>(coin.nHeight * 2 + coin.fCoinBase);
+    ss << coin.out;
 }
 
-static void ApplyHashInternal(MuHash3072& muhash, const Span<const uint8_t> serialized_coin)
+static void ApplyHashInternal(MuHash3072& muhash, const COutPoint& outpoint, const Coin& coin)
 {
-    muhash.Insert(serialized_coin);
+    muhash.Insert(MakeUCharSpan(TxOutSer(outpoint, coin)));
 }
 
-static void ApplyHashInternal(std::nullptr_t, const Span<const uint8_t> serialized_coin) {}
+static void ApplyHashInternal(std::nullptr_t, const COutPoint& outpoint, const Coin& coin) {}
 
 //! Warning: be very careful when changing this! assumeutxo and UTXO snapshot
 //! validation commitments are reliant on the hash constructed by this
@@ -87,7 +89,7 @@ static void ApplyHash(T hash_obj, const uint256& hash, const std::map<uint32_t, 
     for (auto it = outputs.begin(); it != outputs.end(); ++it) {
         COutPoint outpoint = COutPoint(hash, it->first);
         Coin coin = it->second;
-        ApplyHashInternal(hash_obj, MakeUCharSpan(TxOutSer(outpoint, coin)));
+        ApplyHashInternal(hash_obj, outpoint, coin);
     }
 }
 
