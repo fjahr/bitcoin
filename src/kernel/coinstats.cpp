@@ -57,6 +57,18 @@ DataStream TxOutSer(const COutPoint& outpoint, const Coin& coin)
     return ss;
 }
 
+static void ApplyHashInternal(HashWriter& ss, const Span<const uint8_t> serialized_coin)
+{
+    ss << serialized_coin;
+}
+
+static void ApplyHashInternal(MuHash3072& muhash, const Span<const uint8_t> serialized_coin)
+{
+    muhash.Insert(serialized_coin);
+}
+
+static void ApplyHashInternal(std::nullptr_t, const Span<const uint8_t> serialized_coin) {}
+
 //! Warning: be very careful when changing this! assumeutxo and UTXO snapshot
 //! validation commitments are reliant on the hash constructed by this
 //! function.
@@ -69,7 +81,17 @@ DataStream TxOutSer(const COutPoint& outpoint, const Coin& coin)
 //! It is also possible, though very unlikely, that a change in this
 //! construction could cause a previously invalid (and potentially malicious)
 //! UTXO snapshot to be considered valid.
-static void ApplyHash(HashWriter& ss, const uint256& hash, const std::map<uint32_t, Coin>& outputs)
+template <typename T>
+static void ApplyHash(T hash_obj, const uint256& hash, const std::map<uint32_t, Coin>& outputs)
+{
+    for (auto it = outputs.begin(); it != outputs.end(); ++it) {
+        COutPoint outpoint = COutPoint(hash, it->first);
+        Coin coin = it->second;
+        ApplyHashInternal(hash_obj, MakeUCharSpan(TxOutSer(outpoint, coin)));
+    }
+}
+
+static void ApplyHashLegacy(HashWriter& ss, const uint256& hash, const std::map<uint32_t, Coin>& outputs)
 {
     for (auto it = outputs.begin(); it != outputs.end(); ++it) {
         if (it == outputs.begin()) {
@@ -84,17 +106,6 @@ static void ApplyHash(HashWriter& ss, const uint256& hash, const std::map<uint32
         if (it == std::prev(outputs.end())) {
             ss << VARINT(0u);
         }
-    }
-}
-
-static void ApplyHash(std::nullptr_t, const uint256& hash, const std::map<uint32_t, Coin>& outputs) {}
-
-static void ApplyHash(MuHash3072& muhash, const uint256& hash, const std::map<uint32_t, Coin>& outputs)
-{
-    for (auto it = outputs.begin(); it != outputs.end(); ++it) {
-        COutPoint outpoint = COutPoint(hash, it->first);
-        Coin coin = it->second;
-        muhash.Insert(MakeUCharSpan(TxOutSer(outpoint, coin)));
     }
 }
 
@@ -117,8 +128,6 @@ static bool ComputeUTXOStats(CCoinsView* view, CCoinsStats& stats, T hash_obj, c
 {
     std::unique_ptr<CCoinsViewCursor> pcursor(view->Cursor());
     assert(pcursor);
-
-    PrepareHash(hash_obj, stats);
 
     uint256 prevkey;
     std::map<uint32_t, Coin> outputs;
@@ -179,15 +188,6 @@ std::optional<CCoinsStats> ComputeUTXOStats(CoinStatsHashType hash_type, CCoinsV
     }
     return stats;
 }
-
-// The legacy hash serializes the hashBlock
-static void PrepareHash(HashWriter& ss, const CCoinsStats& stats)
-{
-    ss << stats.hashBlock;
-}
-// MuHash does not need the prepare step
-static void PrepareHash(MuHash3072& muhash, CCoinsStats& stats) {}
-static void PrepareHash(std::nullptr_t, CCoinsStats& stats) {}
 
 static void FinalizeHash(HashWriter& ss, CCoinsStats& stats)
 {
