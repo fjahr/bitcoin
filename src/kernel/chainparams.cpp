@@ -378,7 +378,7 @@ public:
         m_assumeutxo_data = {
             {
                 .height = 160'000,
-                .hash_serialized = AssumeutxoHash{uint256S("0x5225141cb62dee63ab3be95f9b03d60801f264010b1816d4bd00618b2736e7be")},
+                .hash_serialized = AssumeutxoHash{uint256S("0x7f353d4985b0cc8cb0d19638886f3f678cb217e3f8a70e2081ea5b59c691ce46")},
                 .nChainTx = 2289496,
                 .blockhash = uint256S("0x0000003ca3c99aff040f2563c2ad8f8ec88bd0fd6b8f0895cfaf1ef90353a62c")
             }
