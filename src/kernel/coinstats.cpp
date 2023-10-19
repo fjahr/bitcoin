@@ -74,15 +74,15 @@ static void ApplyHash(HashWriter& ss, const uint256& hash, const std::map<uint32
     for (auto it = outputs.begin(); it != outputs.end(); ++it) {
         if (it == outputs.begin()) {
             ss << hash;
-            ss << VARINT(it->second.nHeight * 2 + (it->second.fCoinBase ? 1u : 0u));
+            ss << (it->second.nHeight * 2 + (it->second.fCoinBase ? 1u : 0u));
         }
 
-        ss << VARINT(it->first + 1);
+        ss << (it->first + 1);
         ss << it->second.out.scriptPubKey;
-        ss << VARINT_MODE(it->second.out.nValue, VarIntMode::NONNEGATIVE_SIGNED);
+        ss << it->second.out.nValue;
 
         if (it == std::prev(outputs.end())) {
-            ss << VARINT(0u);
+            ss << 0u;
         }
     }
 }
