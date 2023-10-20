@@ -25,6 +25,7 @@ class BlockManager;
 namespace kernel {
 enum class CoinStatsHashType {
     HASH_SERIALIZED,
+    LEGACY_HASH_SERIALIZED,
     MUHASH,
     NONE,
 };

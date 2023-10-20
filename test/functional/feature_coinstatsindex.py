@@ -293,7 +293,7 @@ class CoinStatsIndexTest(BitcoinTestFramework):
     def _test_index_rejects_hash_serialized(self):
         self.log.info("Test that the rpc raises if the legacy hash is passed with the index")
 
-        msg = "hash_serialized_3 hash type cannot be queried for a specific block"
+        msg = "hash_serialized_3/hash_serialized_2 hash types cannot be queried for a specific block"
         assert_raises_rpc_error(-8, msg, self.nodes[1].gettxoutsetinfo, hash_type='hash_serialized_3', hash_or_height=111)
 
         for use_index in {True, False, None}:

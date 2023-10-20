@@ -822,6 +822,8 @@ CoinStatsHashType ParseHashType(const std::string& hash_type_input)
 {
     if (hash_type_input == "hash_serialized_3") {
         return CoinStatsHashType::HASH_SERIALIZED;
+    } else if (hash_type_input == "hash_serialized_2") {
+        return CoinStatsHashType::LEGACY_HASH_SERIALIZED;
     } else if (hash_type_input == "muhash") {
         return CoinStatsHashType::MUHASH;
     } else if (hash_type_input == "none") {
@@ -867,7 +869,7 @@ static RPCHelpMan gettxoutsetinfo()
                 "\nReturns statistics about the unspent transaction output set.\n"
                 "Note this call may take some time if you are not using coinstatsindex.\n",
                 {
-                    {"hash_type", RPCArg::Type::STR, RPCArg::Default{"hash_serialized_3"}, "Which UTXO set hash should be calculated. Options: 'hash_serialized_3' (the legacy algorithm), 'muhash', 'none'."},
+                    {"hash_type", RPCArg::Type::STR, RPCArg::Default{"hash_serialized_3"}, "Which UTXO set hash should be calculated. Options: 'hash_serialized_3', 'hash_serialized_2' (broken legacy algorithm), 'muhash', 'none'."},
                     {"hash_or_height", RPCArg::Type::NUM, RPCArg::DefaultHint{"the current best block"}, "The block hash or height of the target height (only available with coinstatsindex).",
                      RPCArgOptions{
                          .skip_type_check = true,
@@ -883,6 +885,7 @@ static RPCHelpMan gettxoutsetinfo()
                         {RPCResult::Type::NUM, "txouts", "The number of unspent transaction outputs"},
                         {RPCResult::Type::NUM, "bogosize", "Database-independent, meaningless metric indicating the UTXO set size"},
                         {RPCResult::Type::STR_HEX, "hash_serialized_3", /*optional=*/true, "The serialized hash (only present if 'hash_serialized_3' hash_type is chosen)"},
+                        {RPCResult::Type::STR_HEX, "hash_serialized_2", /*optional=*/true, "The broken legacy serialized hash (only present if 'hash_serialized_2' hash_type is chosen)"},
                         {RPCResult::Type::STR_HEX, "muhash", /*optional=*/true, "The serialized hash (only present if 'muhash' hash_type is chosen)"},
                         {RPCResult::Type::NUM, "transactions", /*optional=*/true, "The number of transactions with unspent outputs (not available when coinstatsindex is used)"},
                         {RPCResult::Type::NUM, "disk_size", /*optional=*/true, "The estimated size of the chainstate on disk (not available when coinstatsindex is used)"},
@@ -919,7 +922,9 @@ static RPCHelpMan gettxoutsetinfo()
     UniValue ret(UniValue::VOBJ);
 
     const CBlockIndex* pindex{nullptr};
-    const CoinStatsHashType hash_type{request.params[0].isNull() ? CoinStatsHashType::HASH_SERIALIZED : ParseHashType(request.params[0].get_str())};
+    const bool deprecation_enabled{IsDeprecatedRPCEnabled("gettxoutsetinfo")};
+    const CoinStatsHashType default_hash_type{deprecation_enabled ? CoinStatsHashType::LEGACY_HASH_SERIALIZED : CoinStatsHashType::HASH_SERIALIZED};
+    const CoinStatsHashType hash_type{request.params[0].isNull() ? default_hash_type : ParseHashType(request.params[0].get_str())};
     bool index_requested = request.params[2].isNull() || request.params[2].get_bool();
 
     NodeContext& node = EnsureAnyNodeContext(request.context);
@@ -942,7 +947,7 @@ static RPCHelpMan gettxoutsetinfo()
         }
 
         if (hash_type == CoinStatsHashType::HASH_SERIALIZED) {
-            throw JSONRPCError(RPC_INVALID_PARAMETER, "hash_serialized_3 hash type cannot be queried for a specific block");
+            throw JSONRPCError(RPC_INVALID_PARAMETER, "hash_serialized_3/hash_serialized_2 hash types cannot be queried for a specific block");
         }
 
         if (!index_requested) {
@@ -972,6 +977,9 @@ static RPCHelpMan gettxoutsetinfo()
         ret.pushKV("bogosize", (int64_t)stats.nBogoSize);
         if (hash_type == CoinStatsHashType::HASH_SERIALIZED) {
             ret.pushKV("hash_serialized_3", stats.hashSerialized.GetHex());
+        }
+        if (hash_type == CoinStatsHashType::LEGACY_HASH_SERIALIZED) {
+            ret.pushKV("hash_serialized_2", stats.hashSerialized.GetHex());
         }
         if (hash_type == CoinStatsHashType::MUHASH) {
             ret.pushKV("muhash", stats.hashSerialized.GetHex());

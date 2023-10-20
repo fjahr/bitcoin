@@ -77,6 +77,35 @@ void RemoveCoinHash(MuHash3072& muhash, const COutPoint& outpoint, const Coin& c
 
 static void ApplyCoinHash(std::nullptr_t, const COutPoint& outpoint, const Coin& coin) {}
 
+// Support for deprecated hash_serialized_2
+static void ApplyHashV2(HashWriter& ss, const uint256& hash, const std::map<uint32_t, Coin>& outputs)
+{
+    for (auto it = outputs.begin(); it != outputs.end(); ++it) {
+        if (it == outputs.begin()) {
+            ss << hash;
+            ss << VARINT(it->second.nHeight * 2 + it->second.fCoinBase ? 1u : 0u);
+        }
+
+        ss << VARINT(it->first + 1);
+        ss << it->second.out.scriptPubKey;
+        ss << VARINT_MODE(it->second.out.nValue, VarIntMode::NONNEGATIVE_SIGNED);
+
+        if (it == std::prev(outputs.end())) {
+            ss << VARINT(0u);
+        }
+    }
+}
+
+// These should never be called, but are needed to satisfy the template
+static void ApplyHashV2(MuHash3072& muhash, const uint256& hash, const std::map<uint32_t, Coin>& outputs)
+{
+    assert(false);
+}
+static void ApplyHashV2(std::nullptr_t, const uint256& hash, const std::map<uint32_t, Coin>& outputs)
+{
+    assert(false);
+}
+
 //! Warning: be very careful when changing this! assumeutxo and UTXO snapshot
 //! validation commitments are reliant on the hash constructed by this
 //! function.
@@ -114,7 +143,7 @@ static void ApplyStats(CCoinsStats& stats, const uint256& hash, const std::map<u
 
 //! Calculate statistics about the unspent transaction output set
 template <typename T>
-static bool ComputeUTXOStats(CCoinsView* view, CCoinsStats& stats, T hash_obj, const std::function<void()>& interruption_point)
+static bool ComputeUTXOStats(CCoinsView* view, CCoinsStats& stats, T hash_obj, const std::function<void()>& interruption_point, const bool hash_v2 = false)
 {
     std::unique_ptr<CCoinsViewCursor> pcursor(view->Cursor());
     assert(pcursor);
@@ -128,7 +157,11 @@ static bool ComputeUTXOStats(CCoinsView* view, CCoinsStats& stats, T hash_obj, c
         if (pcursor->GetKey(key) && pcursor->GetValue(coin)) {
             if (!outputs.empty() && key.hash != prevkey) {
                 ApplyStats(stats, prevkey, outputs);
-                ApplyHash(hash_obj, prevkey, outputs);
+                if (hash_v2) {
+                    ApplyHashV2(hash_obj, prevkey, outputs);
+                } else {
+                    ApplyHash(hash_obj, prevkey, outputs);
+                }
                 outputs.clear();
             }
             prevkey = key.hash;
@@ -141,7 +174,11 @@ static bool ComputeUTXOStats(CCoinsView* view, CCoinsStats& stats, T hash_obj, c
     }
     if (!outputs.empty()) {
         ApplyStats(stats, prevkey, outputs);
-        ApplyHash(hash_obj, prevkey, outputs);
+        if (hash_v2) {
+            ApplyHashV2(hash_obj, prevkey, outputs);
+        } else {
+            ApplyHash(hash_obj, prevkey, outputs);
+        }
     }
 
     FinalizeHash(hash_obj, stats);
@@ -160,7 +197,12 @@ std::optional<CCoinsStats> ComputeUTXOStats(CoinStatsHashType hash_type, CCoinsV
         switch (hash_type) {
         case(CoinStatsHashType::HASH_SERIALIZED): {
             HashWriter ss{};
-            return ComputeUTXOStats(view, stats, ss, interruption_point);
+            return ComputeUTXOStats(view, stats, ss, interruption_point, false);
+        }
+        case(CoinStatsHashType::LEGACY_HASH_SERIALIZED): {
+            HashWriter ss{};
+            ss << stats.hashBlock;
+            return ComputeUTXOStats(view, stats, ss, interruption_point, true);
         }
         case(CoinStatsHashType::MUHASH): {
             MuHash3072 muhash;
