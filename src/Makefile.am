@@ -171,7 +171,6 @@ BITCOIN_CORE_H = \
   indirectmap.h \
   init.h \
   init/common.h \
-  init/ip_asn.h \
   interfaces/chain.h \
   interfaces/echo.h \
   interfaces/handler.h \
@@ -470,6 +469,21 @@ libbitcoin_node_a_SOURCES = \
   validationinterface.cpp \
   versionbits.cpp \
   $(BITCOIN_CORE_H)
+
+RAW_FILES = \
+  init/ip_asn.raw
+
+GENERATED_FILES = $(RAW_FILES:.raw=.raw.h)
+
+$(libbitcoin_node_a_SOURCES): $(GENERATED_FILES)
+
+init/ip_asn.raw.h: init/ip_asn.raw
+	@$(MKDIR_P) $(@D)
+	@echo "#ifndef BITCOIN_IP_ASN_H" > $@.new
+	@echo "#define BITCOIN_IP_ASN_H" >> $@.new
+	@xxd -i $< | $(SED) 's/unsigned/static const unsigned/' | $(SED) 's/init_ip_asn_raw/ip_asn/g' >> $@.new
+	@echo "#endif // BITCOIN_IP_ASN_H" >> $@.new
+	@mv -f $@.new $@
 
 if ENABLE_WALLET
 libbitcoin_node_a_SOURCES += wallet/init.cpp
@@ -1050,6 +1064,7 @@ CLEANFILES += wallet/*.gcda wallet/*.gcno
 CLEANFILES += wallet/test/*.gcda wallet/test/*.gcno
 CLEANFILES += zmq/*.gcda zmq/*.gcno
 CLEANFILES += obj/build.h
+CLEANFILES += $(GENERATED_FILES)
 
 EXTRA_DIST = $(CTAES_DIST)
 

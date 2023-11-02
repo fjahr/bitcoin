@@ -31,7 +31,7 @@
 #include <index/coinstatsindex.h>
 #include <index/txindex.h>
 #include <init/common.h>
-#include <init/ip_asn.h>
+#include <init/ip_asn.raw.h>
 #include <interfaces/chain.h>
 #include <interfaces/init.h>
 #include <interfaces/node.h>
