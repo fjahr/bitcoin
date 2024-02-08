@@ -60,7 +60,7 @@ class AssumeutxoTest(BitcoinTestFramework):
         self.extra_args = [
             [],
             ["-fastprune", "-prune=1", "-blockfilterindex=1", "-coinstatsindex=1"],
-            ["-persistmempool=0","-txindex=1", "-blockfilterindex=1", "-coinstatsindex=1"],
+            ["-txindex=1", "-blockfilterindex=1", "-coinstatsindex=1"],
         ]
 
     def setup_network(self):
@@ -137,7 +137,7 @@ class AssumeutxoTest(BitcoinTestFramework):
 
     def test_invalid_mempool_state(self, dump_output_path):
         self.log.info("Test bitcoind should fail when mempool not empty.")
-        node=self.nodes[2]
+        node=self.nodes[0]
         tx = MiniWallet(node).send_self_transfer(from_node=node)
 
         assert tx['txid'] in node.getrawmempool()
@@ -145,8 +145,6 @@ class AssumeutxoTest(BitcoinTestFramework):
         # Attempt to load the snapshot on Node 2 and expect it to fail
         with node.assert_debug_log(expected_msgs=["[snapshot] can't activate a snapshot when mempool not empty"]):
             assert_raises_rpc_error(-32603, "Unable to load UTXO snapshot", node.loadtxoutset, dump_output_path)
-
-        self.restart_node(2, extra_args=self.extra_args[2] )
 
     def run_test(self):
         """
