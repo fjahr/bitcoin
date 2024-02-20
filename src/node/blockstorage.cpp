@@ -1042,7 +1042,7 @@ bool BlockManager::ReadBlockFromDisk(CBlock& block, const FlatFilePos& pos) cons
     }
 
     // Check the header
-    if (!CheckProofOfWork(block.GetHash(), block.nBits, GetConsensus())) {
+    if (!CheckProofOfWork(block.GetHeaderHash(), block.nBits, GetConsensus())) {
         return error("ReadBlockFromDisk: Errors in block header at %s", pos.ToString());
     }
 
@@ -1061,8 +1061,8 @@ bool BlockManager::ReadBlockFromDisk(CBlock& block, const CBlockIndex& index) co
     if (!ReadBlockFromDisk(block, block_pos)) {
         return false;
     }
-    if (block.GetHash() != index.GetBlockHash()) {
-        return error("ReadBlockFromDisk(CBlock&, CBlockIndex*): GetHash() doesn't match index for %s at %s",
+    if (block.GetHeaderHash() != index.GetBlockHash()) {
+        return error("ReadBlockFromDisk(CBlock&, CBlockIndex*): GetHeaderHash() doesn't match index for %s at %s",
                      index.ToString(), block_pos.ToString());
     }
     return true;

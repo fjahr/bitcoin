@@ -128,7 +128,7 @@ static bool GenerateBlock(ChainstateManager& chainman, CBlock& block, uint64_t& 
     block_out.reset();
     block.hashMerkleRoot = BlockMerkleRoot(block);
 
-    while (max_tries > 0 && block.nNonce < std::numeric_limits<uint32_t>::max() && !CheckProofOfWork(block.GetHash(), block.nBits, chainman.GetConsensus()) && !chainman.m_interrupt) {
+    while (max_tries > 0 && block.nNonce < std::numeric_limits<uint32_t>::max() && !CheckProofOfWork(block.GetHeaderHash(), block.nBits, chainman.GetConsensus()) && !chainman.m_interrupt) {
         ++block.nNonce;
         --max_tries;
     }
@@ -165,7 +165,7 @@ static UniValue generateBlocks(ChainstateManager& chainman, const CTxMemPool& me
 
         if (block_out) {
             --nGenerate;
-            blockHashes.push_back(block_out->GetHash().GetHex());
+            blockHashes.push_back(block_out->GetHeaderHash().GetHex());
         }
     }
     return blockHashes;
@@ -396,7 +396,7 @@ static RPCHelpMan generateblock()
     }
 
     UniValue obj(UniValue::VOBJ);
-    obj.pushKV("hash", block_out->GetHash().GetHex());
+    obj.pushKV("hash", block_out->GetHeaderHash().GetHex());
     if (!process_new_block) {
         DataStream block_ser;
         block_ser << TX_WITH_WITNESS(*block_out);
@@ -682,7 +682,7 @@ static RPCHelpMan getblocktemplate()
             if (!DecodeHexBlk(block, dataval.get_str()))
                 throw JSONRPCError(RPC_DESERIALIZATION_ERROR, "Block decode failed");
 
-            uint256 hash = block.GetHash();
+            uint256 hash = block.GetHeaderHash();
             const CBlockIndex* pindex = chainman.m_blockman.LookupBlockIndex(hash);
             if (pindex) {
                 if (pindex->IsValid(BLOCK_VALID_SCRIPTS))
@@ -976,7 +976,7 @@ public:
 
 protected:
     void BlockChecked(const CBlock& block, const BlockValidationState& stateIn) override {
-        if (block.GetHash() != hash)
+        if (block.GetHeaderHash() != hash)
             return;
         found = true;
         state = stateIn;
@@ -1014,7 +1014,7 @@ static RPCHelpMan submitblock()
     }
 
     ChainstateManager& chainman = EnsureAnyChainman(request.context);
-    uint256 hash = block.GetHash();
+    uint256 hash = block.GetHeaderHash();
     {
         LOCK(cs_main);
         const CBlockIndex* pindex = chainman.m_blockman.LookupBlockIndex(hash);
@@ -1037,7 +1037,7 @@ static RPCHelpMan submitblock()
     }
 
     bool new_block;
-    auto sc = std::make_shared<submitblock_StateCatcher>(block.GetHash());
+    auto sc = std::make_shared<submitblock_StateCatcher>(block.GetHeaderHash());
     RegisterSharedValidationInterface(sc);
     bool accepted = chainman.ProcessNewBlock(blockptr, /*force_processing=*/true, /*min_pow_checked=*/true, /*new_block=*/&new_block);
     UnregisterSharedValidationInterface(sc);
