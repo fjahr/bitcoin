@@ -520,6 +520,7 @@ RPCHelpMan::RPCHelpMan(std::string name, std::string description, std::vector<RP
     // there can be pairs of POSITIONAL and NAMED parameters with the same name.
     enum ParamType { POSITIONAL = 1, NAMED = 2, NAMED_ONLY = 4 };
     std::map<std::string, int> param_names;
+    size_t arg_index{0};
 
     for (const auto& arg : m_args) {
         std::vector<std::string> names = SplitString(arg.m_names, '|');
@@ -529,6 +530,7 @@ RPCHelpMan::RPCHelpMan(std::string name, std::string description, std::vector<RP
             CHECK_NONFATAL(!(param_type & POSITIONAL));
             CHECK_NONFATAL(!(param_type & NAMED_ONLY));
             param_type |= POSITIONAL;
+            m_arg_names.emplace(name, arg_index);
         }
         if (arg.m_type == RPCArg::Type::OBJ_NAMED_PARAMS) {
             for (const auto& inner : arg.m_inner) {
@@ -569,6 +571,7 @@ RPCHelpMan::RPCHelpMan(std::string name, std::string description, std::vector<RP
                 break;
             }
         }
+        ++arg_index;
     }
 }
 
@@ -719,12 +722,7 @@ std::vector<std::pair<std::string, bool>> RPCHelpMan::GetArgNames() const
 
 size_t RPCHelpMan::GetParamIndex(std::string_view key) const
 {
-    auto it{std::find_if(
-        m_args.begin(), m_args.end(), [&key](const auto& arg) { return arg.GetName() == key;}
-    )};
-
-    CHECK_NONFATAL(it != m_args.end());  // TODO: ideally this is checked at compile time
-    return std::distance(m_args.begin(), it);
+    return m_arg_names.at(static_cast<std::string>(key));
 }
 
 std::string RPCHelpMan::ToString() const
