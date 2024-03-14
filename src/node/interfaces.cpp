@@ -534,7 +534,7 @@ public:
     {
         LOCK(::cs_main);
         const CBlockIndex* block{chainman().ActiveChain()[height]};
-        return block && ((block->nStatus & BLOCK_HAVE_DATA) != 0) && block->nTx > 0;
+        return block && ((block->nStatus & BLOCK_HAVE_DATA) != 0) && block->GetBlockTx() > 0;
     }
     CBlockLocator getTipLocator() override
     {

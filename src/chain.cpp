@@ -128,6 +128,24 @@ void CBlockIndex::BuildSkip()
         pskip = pprev->GetAncestor(GetSkipHeight(nHeight));
 }
 
+void CBlockIndex::SetChainTx(const uint64_t chain_tx) {
+    m_num_tx &= (static_cast<uint64_t>(0xFFFF));
+    m_num_tx |= (chain_tx << 16);
+}
+
+void CBlockIndex::SetBlockTx(const uint16_t block_tx) {
+    m_num_tx &= ~static_cast<uint64_t>(0xFFFF);
+    m_num_tx |= block_tx;
+}
+
+uint16_t CBlockIndex::GetBlockTx() const {
+    return static_cast<uint16_t>(m_num_tx & 0xFFFF);
+}
+
+uint64_t CBlockIndex::GetChainTx() const {
+    return m_num_tx >> 16;
+}
+
 arith_uint256 GetBlockProof(const CBlockIndex& block)
 {
     arith_uint256 bnTarget;

@@ -2777,7 +2777,7 @@ static void UpdateTipLog(
     LogPrintf("%s%s: new best=%s height=%d version=0x%08x log2_work=%f tx=%lu date='%s' progress=%f cache=%.1fMiB(%utxo)%s\n",
         prefix, func_name,
         tip->GetBlockHash().ToString(), tip->nHeight, tip->nVersion,
-        log(tip->nChainWork.getdouble()) / log(2.0), tip->nChainTx,
+        log(tip->nChainWork.getdouble()) / log(2.0), tip->GetChainTx(),
         FormatISO8601DateTime(tip->GetBlockTime()),
         GuessVerificationProgress(params.TxData(), tip),
         coins_tip.DynamicMemoryUsage() * (1.0 / (1 << 20)),
@@ -3659,8 +3659,8 @@ void Chainstate::TryAddBlockIndexCandidate(CBlockIndex* pindex)
 void ChainstateManager::ReceivedBlockTransactions(const CBlock& block, CBlockIndex* pindexNew, const FlatFilePos& pos)
 {
     AssertLockHeld(cs_main);
-    pindexNew->nTx = block.vtx.size();
-    pindexNew->nChainTx = 0;
+    pindexNew->SetBlockTx(block.vtx.size());
+    pindexNew->SetChainTx(0);
     pindexNew->nFile = pos.nFile;
     pindexNew->nDataPos = pos.nPos;
     pindexNew->nUndoPos = 0;
@@ -3680,7 +3680,7 @@ void ChainstateManager::ReceivedBlockTransactions(const CBlock& block, CBlockInd
         while (!queue.empty()) {
             CBlockIndex *pindex = queue.front();
             queue.pop_front();
-            pindex->nChainTx = (pindex->pprev ? pindex->pprev->nChainTx : 0) + pindex->nTx;
+            pindex->SetChainTx((pindex->pprev ? pindex->pprev->GetChainTx() : 0) + pindex->GetBlockTx());
             pindex->nSequenceId = nBlockSequenceId++;
             for (Chainstate *c : GetAll()) {
                 c->TryAddBlockIndexCandidate(pindex);
@@ -4260,7 +4260,7 @@ bool ChainstateManager::AcceptBlock(const std::shared_ptr<const CBlock>& pblock,
     // and unrequested blocks.
     if (fAlreadyHave) return true;
     if (!fRequested) {  // If we didn't ask for it:
-        if (pindex->nTx != 0) return true;    // This is a previously-processed block that was pruned
+        if (pindex->GetBlockTx() != 0) return true;    // This is a previously-processed block that was pruned
         if (!fHasMoreOrSameWork) return true; // Don't process less-work chains
         if (fTooFarAhead) return true;        // Block height is too high
 
@@ -5037,7 +5037,7 @@ void ChainstateManager::CheckBlockIndex()
         if (pindexFirstMissing == nullptr && !(pindex->nStatus & BLOCK_HAVE_DATA)) {
             pindexFirstMissing = pindex;
         }
-        if (pindexFirstNeverProcessed == nullptr && pindex->nTx == 0) pindexFirstNeverProcessed = pindex;
+        if (pindexFirstNeverProcessed == nullptr && pindex->GetBlockTx() == 0) pindexFirstNeverProcessed = pindex;
         if (pindex->pprev != nullptr && pindexFirstNotTreeValid == nullptr && (pindex->nStatus & BLOCK_VALID_MASK) < BLOCK_VALID_TREE) pindexFirstNotTreeValid = pindex;
 
         if (pindex->pprev != nullptr && !pindex->IsAssumedValid()) {
@@ -5077,7 +5077,7 @@ void ChainstateManager::CheckBlockIndex()
         // background chainstate.
         if (!m_blockman.m_have_pruned && !pindex->IsAssumedValid()) {
             // If we've never pruned, then HAVE_DATA should be equivalent to nTx > 0
-            assert(!(pindex->nStatus & BLOCK_HAVE_DATA) == (pindex->nTx == 0));
+            assert(!(pindex->nStatus & BLOCK_HAVE_DATA) == (pindex->GetBlockTx() == 0));
             if (pindexFirstAssumeValid == nullptr) {
                 // If we've got some assume valid blocks, then we might have
                 // missing blocks (not HAVE_DATA) but still treat them as
@@ -5087,18 +5087,18 @@ void ChainstateManager::CheckBlockIndex()
             }
         } else {
             // If we have pruned, then we can only say that HAVE_DATA implies nTx > 0
-            if (pindex->nStatus & BLOCK_HAVE_DATA) assert(pindex->nTx > 0);
+            if (pindex->nStatus & BLOCK_HAVE_DATA) assert(pindex->GetBlockTx() > 0);
         }
         if (pindex->nStatus & BLOCK_HAVE_UNDO) assert(pindex->nStatus & BLOCK_HAVE_DATA);
         if (pindex->IsAssumedValid()) {
             // Assumed-valid blocks should have some nTx value.
-            assert(pindex->nTx > 0);
+            assert(pindex->GetBlockTx() > 0);
             // Assumed-valid blocks should connect to the main chain.
             assert((pindex->nStatus & BLOCK_VALID_MASK) >= BLOCK_VALID_TREE);
         } else {
             // Otherwise there should only be an nTx value if we have
             // actually seen a block's transactions.
-            assert(((pindex->nStatus & BLOCK_VALID_MASK) >= BLOCK_VALID_TRANSACTIONS) == (pindex->nTx > 0)); // This is pruning-independent.
+            assert(((pindex->nStatus & BLOCK_VALID_MASK) >= BLOCK_VALID_TRANSACTIONS) == (pindex->GetBlockTx() > 0)); // This is pruning-independent.
         }
         // All parents having had data (at some point) is equivalent to all parents being VALID_TRANSACTIONS, which is equivalent to HaveNumChainTxs().
         assert((pindexFirstNeverProcessed == nullptr) == pindex->HaveNumChainTxs());
@@ -5115,12 +5115,12 @@ void ChainstateManager::CheckBlockIndex()
             assert((pindex->nStatus & BLOCK_FAILED_MASK) == 0); // The failed mask cannot be set for blocks without invalid parents.
         }
         // Make sure nChainTx sum is correctly computed.
-        uint64_t prev_chain_tx = pindex->pprev ? pindex->pprev->nChainTx : 0;
-        assert((pindex->nChainTx == pindex->nTx + prev_chain_tx)
+        uint64_t prev_chain_tx = pindex->pprev ? pindex->pprev->GetChainTx() : 0;
+        assert((pindex->GetChainTx() == pindex->GetBlockTx() + prev_chain_tx)
                // Transaction may be completely unset - happens if only the header was accepted but the block hasn't been processed.
-               || (pindex->nChainTx == 0 && pindex->nTx == 0)
+               || (pindex->GetChainTx() == 0 && pindex->GetBlockTx() == 0)
                // nChainTx may be unset, but nTx set (if a block has been accepted, but one of its predecessors hasn't been processed yet)
-               || (pindex->nChainTx == 0 && prev_chain_tx == 0 && pindex->pprev)
+               || (pindex->GetChainTx() == 0 && prev_chain_tx == 0 && pindex->pprev)
                // Transaction counts prior to snapshot are unknown.
                || pindex->IsAssumedValid());
         // Chainstate-specific checks on setBlockIndexCandidates
@@ -5290,13 +5290,13 @@ double GuessVerificationProgress(const ChainTxData& data, const CBlockIndex *pin
 
     double fTxTotal;
 
-    if (pindex->nChainTx <= data.nTxCount) {
+    if (pindex->GetChainTx() <= data.nTxCount) {
         fTxTotal = data.nTxCount + (nNow - data.nTime) * data.dTxRate;
     } else {
-        fTxTotal = pindex->nChainTx + (nNow - pindex->GetBlockTime()) * data.dTxRate;
+        fTxTotal = pindex->GetChainTx() + (nNow - pindex->GetBlockTime()) * data.dTxRate;
     }
 
-    return std::min<double>(pindex->nChainTx / fTxTotal, 1.0);
+    return std::min<double>(pindex->GetChainTx() / fTxTotal, 1.0);
 }
 
 std::optional<uint256> ChainstateManager::SnapshotBlockhash() const
@@ -5703,11 +5703,11 @@ bool ChainstateManager::PopulateAndValidateSnapshot(
 
         // Fake nTx so that LoadBlockIndex() loads assumed-valid CBlockIndex
         // entries (among other things)
-        if (!index->nTx) {
-            index->nTx = 1;
+        if (!index->GetBlockTx()) {
+            index->SetBlockTx(1);
         }
         // Fake nChainTx so that GuessVerificationProgress reports accurately
-        index->nChainTx = index->pprev->nChainTx + index->nTx;
+        index->SetChainTx(index->pprev->GetChainTx() + index->GetBlockTx());
 
         // Mark unvalidated block index entries beneath the snapshot base block as assumed-valid.
         if (!index->IsValid(BLOCK_VALID_SCRIPTS)) {
@@ -5731,7 +5731,7 @@ bool ChainstateManager::PopulateAndValidateSnapshot(
     }
 
     assert(index);
-    index->nChainTx = au_data.nChainTx;
+    index->SetChainTx(au_data.nChainTx);
     snapshot_chainstate.setBlockIndexCandidates.insert(snapshot_start_block);
 
     LogPrintf("[snapshot] validated snapshot (%.2f MB)\n",

@@ -148,6 +148,10 @@ enum BlockStatus : uint32_t {
  */
 class CBlockIndex
 {
+private:
+    //! TODO Docs
+    uint64_t m_num_tx{0};
+
 public:
     //! pointer to the hash of the block, if any. Memory is owned by this CBlockIndex
     const uint256* phashBlock{nullptr};
@@ -178,7 +182,7 @@ public:
     //! Note: this value is faked during UTXO snapshot load to ensure that
     //! LoadBlockIndex() will load index entries for blocks that we lack data for.
     //! @sa ActivateSnapshot
-    unsigned int nTx{0};
+    // unsigned int nTx{0};
 
     //! (memory only) Number of transactions in the chain up to and including this block.
     //! This value will be non-zero only if and only if transactions for this block and all its parents are available.
@@ -187,7 +191,7 @@ public:
     //! have the underlying block data available during snapshot load.
     //! @sa AssumeutxoData
     //! @sa ActivateSnapshot
-    uint64_t nChainTx{0};
+    // uint64_t nChainTx{0};
 
     //! Verification status of this block. See enum BlockStatus
     //!
@@ -271,7 +275,7 @@ public:
      * all subsequent assumed-valid blocks) since its nChainTx value will have been set
      * manually based on the related AssumeutxoData entry.
      */
-    bool HaveNumChainTxs() const { return nChainTx != 0; }
+    bool HaveNumChainTxs() const { return GetChainTx() != 0; }
 
     NodeSeconds Time() const
     {
@@ -353,6 +357,11 @@ public:
     CBlockIndex* GetAncestor(int height);
     const CBlockIndex* GetAncestor(int height) const;
 
+    void SetChainTx(const uint64_t chain_tx);
+    void SetBlockTx(const uint16_t block_tx);
+    uint16_t GetBlockTx() const;
+    uint64_t GetChainTx() const;
+
     CBlockIndex() = default;
     ~CBlockIndex() = default;
 
@@ -411,7 +420,10 @@ public:
 
         READWRITE(VARINT_MODE(obj.nHeight, VarIntMode::NONNEGATIVE_SIGNED));
         READWRITE(VARINT(obj.nStatus));
-        READWRITE(VARINT(obj.nTx));
+        uint16_t block_tx{0};
+        SER_WRITE(obj, block_tx = obj.GetBlockTx());
+        READWRITE(VARINT(block_tx));
+        SER_READ(obj, obj.SetBlockTx(block_tx));
         if (obj.nStatus & (BLOCK_HAVE_DATA | BLOCK_HAVE_UNDO)) READWRITE(VARINT_MODE(obj.nFile, VarIntMode::NONNEGATIVE_SIGNED));
         if (obj.nStatus & BLOCK_HAVE_DATA) READWRITE(VARINT(obj.nDataPos));
         if (obj.nStatus & BLOCK_HAVE_UNDO) READWRITE(VARINT(obj.nUndoPos));

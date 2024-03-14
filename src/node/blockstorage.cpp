@@ -128,7 +128,7 @@ bool BlockTreeDB::LoadBlockIndexGuts(const Consensus::Params& consensusParams, s
                 pindexNew->nBits          = diskindex.nBits;
                 pindexNew->nNonce         = diskindex.nNonce;
                 pindexNew->nStatus        = diskindex.nStatus;
-                pindexNew->nTx            = diskindex.nTx;
+                pindexNew->SetBlockTx(diskindex.GetBlockTx());
 
                 if (!CheckProofOfWork(pindexNew->GetBlockHash(), pindexNew->nBits, consensusParams)) {
                     LogError("%s: CheckProofOfWork failed: %s\n", __func__, pindexNew->ToString());
@@ -414,7 +414,7 @@ bool BlockManager::LoadBlockIndex(const std::optional<uint256>& snapshot_blockha
         // Since nChainTx (responsible for estimated progress) isn't persisted
         // to disk, we must bootstrap the value for assumedvalid chainstates
         // from the hardcoded assumeutxo chainparams.
-        base->nChainTx = au_data.nChainTx;
+        base->SetChainTx(au_data.nChainTx);
         LogPrintf("[snapshot] set nChainTx=%d for %s\n", au_data.nChainTx, snapshot_blockhash->ToString());
     } else {
         // If this isn't called with a snapshot blockhash, make sure the cached snapshot height
@@ -445,20 +445,20 @@ bool BlockManager::LoadBlockIndex(const std::optional<uint256>& snapshot_blockha
         // blocks that are assumed-valid on the basis of snapshot load (see
         // PopulateAndValidateSnapshot()).
         // Pruned nodes may have deleted the block.
-        if (pindex->nTx > 0) {
+        if (pindex->GetBlockTx() > 0) {
             if (pindex->pprev) {
                 if (m_snapshot_height && pindex->nHeight == *m_snapshot_height &&
                         pindex->GetBlockHash() == *snapshot_blockhash) {
                     // Should have been set above; don't disturb it with code below.
-                    Assert(pindex->nChainTx > 0);
-                } else if (pindex->pprev->nChainTx > 0) {
-                    pindex->nChainTx = pindex->pprev->nChainTx + pindex->nTx;
+                    Assert(pindex->GetChainTx() > 0);
+                } else if (pindex->pprev->GetChainTx() > 0) {
+                    pindex->SetChainTx(pindex->pprev->GetChainTx() + pindex->GetBlockTx());
                 } else {
-                    pindex->nChainTx = 0;
+                    pindex->SetChainTx(0);
                     m_blocks_unlinked.insert(std::make_pair(pindex->pprev, pindex));
                 }
             } else {
-                pindex->nChainTx = pindex->nTx;
+                pindex->SetChainTx(pindex->GetBlockTx());
             }
         }
         if (!(pindex->nStatus & BLOCK_FAILED_MASK) && pindex->pprev && (pindex->pprev->nStatus & BLOCK_FAILED_MASK)) {
@@ -592,7 +592,7 @@ const CBlockIndex* BlockManager::GetLastCheckpoint(const CCheckpointData& data)
 bool BlockManager::IsBlockPruned(const CBlockIndex& block)
 {
     AssertLockHeld(::cs_main);
-    return m_have_pruned && !(block.nStatus & BLOCK_HAVE_DATA) && (block.nTx > 0);
+    return m_have_pruned && !(block.nStatus & BLOCK_HAVE_DATA) && (block.GetBlockTx() > 0);
 }
 
 const CBlockIndex* BlockManager::GetFirstStoredBlock(const CBlockIndex& upper_block, const CBlockIndex* lower_block)
