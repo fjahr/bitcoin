@@ -2777,7 +2777,7 @@ static void UpdateTipLog(
     LogPrintf("%s%s: new best=%s height=%d version=0x%08x log2_work=%f tx=%lu date='%s' progress=%f cache=%.1fMiB(%utxo)%s\n",
         prefix, func_name,
         tip->GetBlockHash().ToString(), tip->nHeight, tip->nVersion,
-        log(tip->nChainWork.getdouble()) / log(2.0), (unsigned long)tip->nChainTx,
+        log(tip->nChainWork.getdouble()) / log(2.0), tip->nChainTx,
         FormatISO8601DateTime(tip->GetBlockTime()),
         GuessVerificationProgress(params.TxData(), tip),
         coins_tip.DynamicMemoryUsage() * (1.0 / (1 << 20)),
@@ -5115,7 +5115,7 @@ void ChainstateManager::CheckBlockIndex()
             assert((pindex->nStatus & BLOCK_FAILED_MASK) == 0); // The failed mask cannot be set for blocks without invalid parents.
         }
         // Make sure nChainTx sum is correctly computed.
-        unsigned int prev_chain_tx = pindex->pprev ? pindex->pprev->nChainTx : 0;
+        uint64_t prev_chain_tx = pindex->pprev ? pindex->pprev->nChainTx : 0;
         assert((pindex->nChainTx == pindex->nTx + prev_chain_tx)
                // Transaction may be completely unset - happens if only the header was accepted but the block hasn't been processed.
                || (pindex->nChainTx == 0 && pindex->nTx == 0)
