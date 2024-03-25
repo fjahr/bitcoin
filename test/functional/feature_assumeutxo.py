@@ -11,9 +11,6 @@ The assumeutxo value generated and used here is committed to in
 
 ## Possible test improvements
 
-- TODO: test what happens with -reindex and -reindex-chainstate before the
-      snapshot is validated, and make sure it's deleted successfully.
-
 Interesting test cases could be loading an assumeutxo snapshot file with:
 
 - TODO: Valid hash but invalid snapshot file (bad coin height or
@@ -277,6 +274,18 @@ class AssumeutxoTest(BitcoinTestFramework):
         assert_equal(snapshot['validated'], False)
 
         assert_equal(n1.getblockchaininfo()["blocks"], SNAPSHOT_BASE_HEIGHT)
+
+        self.log.info(f"Check that restarting with -reindex will delete the snapshot chainstate")
+        self.restart_node(1, extra_args=['-reindex=1', *self.extra_args[1]])
+        assert_equal(1, len(n1.getchainstates()["chainstates"]))
+
+        self.log.info(f"Load the snapshot once more to continue with the test")
+        for i in range(1, 300):
+            block = n0.getblock(n0.getblockhash(i), 0)
+            n1.submitheader(block)
+        loaded = n1.loadtxoutset(dump_output['path'])
+        assert_equal(loaded['coins_loaded'], SNAPSHOT_BASE_HEIGHT)
+        assert_equal(loaded['base_height'], SNAPSHOT_BASE_HEIGHT)
 
         self.log.info("Submit a stale block that forked off the chain before the snapshot")
         # Normally a block like this would not be downloaded, but if it is
