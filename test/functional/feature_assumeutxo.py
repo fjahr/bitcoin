@@ -34,7 +34,14 @@ Interesting starting states could be loading a snapshot when the current chain t
 """
 from shutil import rmtree
 
-from test_framework.messages import tx_from_hex
+from test_framework.messages import (
+    CBlock,
+    from_hex,
+    msg_block,
+    msg_headers,
+    tx_from_hex,
+)
+from test_framework.p2p import P2PDataStore
 from test_framework.test_framework import BitcoinTestFramework
 from test_framework.util import (
     assert_equal,
@@ -304,18 +311,55 @@ class AssumeutxoTest(BitcoinTestFramework):
         self.log.info("-- Testing all indexes + reindex")
         assert_equal(n2.getblockcount(), START_HEIGHT)
 
+        # Connect a peer and start syncing the IBD chain before the snapshot
+        # is loaded.
+        peer = n2.add_outbound_p2p_connection(P2PDataStore(), p2p_idx=0, connection_type="outbound-full-relay")
+        # Sending an IBD block before loading the dump so that the peer has a
+        # last common block set.
+        block_hash = n0.getblockhash(START_HEIGHT + 1)
+        block_hex = n0.getblock(blockhash=block_hash, verbosity=0)
+        block = from_hex(CBlock(), block_hex)
+
+        # TODO: REMOVE DEBUG MESSAGE CHECK
+        with n2.assert_debug_log(expected_msgs=["[FindNextBlocksToDownload] HERE"]):
+            peer.send_and_ping(msg_headers([block]))
+            peer.wait_until(lambda: int(block_hash, 16) in peer.getdata_requests)
+            peer.send_and_ping(msg_block(block))
+
         self.log.info(f"Loading snapshot into third node from {dump_output['path']}")
         loaded = n2.loadtxoutset(dump_output['path'])
         assert_equal(loaded['coins_loaded'], SNAPSHOT_BASE_HEIGHT)
         assert_equal(loaded['base_height'], SNAPSHOT_BASE_HEIGHT)
 
         normal, snapshot = n2.getchainstates()['chainstates']
-        assert_equal(normal['blocks'], START_HEIGHT)
+        assert_equal(normal['blocks'], START_HEIGHT + 1)
         assert_equal(normal.get('snapshot_blockhash'), None)
         assert_equal(normal['validated'], True)
         assert_equal(snapshot['blocks'], SNAPSHOT_BASE_HEIGHT)
         assert_equal(snapshot['snapshot_blockhash'], dump_output['base_hash'])
         assert_equal(snapshot['validated'], False)
+
+        # Send all available headers to node 2 to trigger another getdata
+        # request
+        blocks = []
+        for i in range(START_HEIGHT, FINAL_HEIGHT):
+            block_hash = n0.getblockhash(i)
+            block_hex = n0.getblock(blockhash=block_hash, verbosity=0)
+            block = from_hex(CBlock(), block_hex)
+            blocks.append(block)
+
+        # TODO: REMOVE DEBUG MESSAGE CHECK
+        with n2.assert_debug_log(expected_msgs=["[FindNextBlocksToDownload] HERE"]):
+            peer.send_and_ping(msg_headers(blocks))
+
+        # Node 2 should request the blocks following the snapshot next. It
+        # should not ask for blocks below the snapshot (IBD blocks).
+        assert int(n0.getblockhash(SNAPSHOT_BASE_HEIGHT + 1), 16) in peer.getdata_requests
+        assert int(n0.getblockhash(START_HEIGHT + 2), 16) not in peer.getdata_requests
+        assert int(n0.getblockhash(SNAPSHOT_BASE_HEIGHT - 1), 16) not in peer.getdata_requests
+
+        # Disconnect to not interfere with the rest of the test
+        peer.peer_disconnect()
 
         self.connect_nodes(0, 2)
         self.wait_until(lambda: n2.getchainstates()['chainstates'][-1]['blocks'] == FINAL_HEIGHT)
