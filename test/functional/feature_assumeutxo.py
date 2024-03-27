@@ -275,18 +275,6 @@ class AssumeutxoTest(BitcoinTestFramework):
 
         assert_equal(n1.getblockchaininfo()["blocks"], SNAPSHOT_BASE_HEIGHT)
 
-        self.log.info(f"Check that restarting with -reindex will delete the snapshot chainstate")
-        self.restart_node(1, extra_args=['-reindex=1', *self.extra_args[1]])
-        assert_equal(1, len(n1.getchainstates()["chainstates"]))
-
-        self.log.info(f"Load the snapshot once more to continue with the test")
-        for i in range(1, 300):
-            block = n0.getblock(n0.getblockhash(i), 0)
-            n1.submitheader(block)
-        loaded = n1.loadtxoutset(dump_output['path'])
-        assert_equal(loaded['coins_loaded'], SNAPSHOT_BASE_HEIGHT)
-        assert_equal(loaded['base_height'], SNAPSHOT_BASE_HEIGHT)
-
         self.log.info("Submit a stale block that forked off the chain before the snapshot")
         # Normally a block like this would not be downloaded, but if it is
         # submitted early before the background chain catches up to the fork
@@ -387,6 +375,18 @@ class AssumeutxoTest(BitcoinTestFramework):
         loaded = n2.loadtxoutset(dump_output['path'])
         assert_equal(loaded['coins_loaded'], SNAPSHOT_BASE_HEIGHT)
         assert_equal(loaded['base_height'], SNAPSHOT_BASE_HEIGHT)
+
+        self.log.info(f"Check that restarting with -reindex/-reindex-chainstate will delete the snapshot chainstate")
+        for reindex_arg in ['-reindex=1', '-reindex-chainstate=1']:
+            self.restart_node(2, extra_args=[reindex_arg, *self.extra_args[2]])
+            assert_equal(1, len(n2.getchainstates()["chainstates"]))
+
+            for i in range(1, 300):
+                block = n0.getblock(n0.getblockhash(i), 0)
+                n2.submitheader(block)
+            loaded = n2.loadtxoutset(dump_output['path'])
+            assert_equal(loaded['coins_loaded'], SNAPSHOT_BASE_HEIGHT)
+            assert_equal(loaded['base_height'], SNAPSHOT_BASE_HEIGHT)
 
         normal, snapshot = n2.getchainstates()['chainstates']
         assert_equal(normal['blocks'], START_HEIGHT)
