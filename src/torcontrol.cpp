@@ -314,12 +314,18 @@ std::map<std::string,std::string> ParseTorReplyMapping(const std::string &s)
     return mapping;
 }
 
+void ReconnectCallback(evutil_socket_t fd, short what, void *arg)
+{
+    TorController *self = static_cast<TorController*>(arg);
+    self->Reconnect();
+}
+
 TorController::TorController(struct event_base* _base, const std::string& tor_control_center, const CService& target):
     base(_base),
     m_tor_control_center(tor_control_center), conn(base), reconnect(true), reconnect_timeout(RECONNECT_TIMEOUT_START),
     m_target(target)
 {
-    reconnect_ev = event_new(base, -1, 0, reconnect_cb, this);
+    reconnect_ev = event_new(base, -1, 0, ReconnectCallback, this);
     if (!reconnect_ev)
         LogPrintf("tor: Failed to create event for reconnection: out of memory?\n");
     // Start connection attempts immediately
@@ -650,12 +656,6 @@ void TorController::Reconnect()
 fs::path TorController::GetPrivateKeyFile()
 {
     return gArgs.GetDataDirNet() / "onion_v3_private_key";
-}
-
-void TorController::reconnect_cb(evutil_socket_t fd, short what, void *arg)
-{
-    TorController *self = static_cast<TorController*>(arg);
-    self->Reconnect();
 }
 
 /****** Thread ********/

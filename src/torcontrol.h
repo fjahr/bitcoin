@@ -11,8 +11,6 @@
 #include <netaddress.h>
 #include <util/fs.h>
 
-#include <event2/util.h>
-
 #include <cstdint>
 #include <deque>
 #include <functional>
@@ -148,9 +146,6 @@ public:
     void connected_cb(TorControlConnection& conn);
     /** Callback after connection lost or failed connection attempt */
     void disconnected_cb(TorControlConnection& conn);
-
-    /** Callback for reconnect timer */
-    static void reconnect_cb(evutil_socket_t fd, short what, void *arg);
 };
 
 #endif // BITCOIN_TORCONTROL_H
