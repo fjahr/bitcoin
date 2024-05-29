@@ -627,15 +627,7 @@ CreatedTransactionResult FundTransaction(CWallet& wallet, const CMutableTransact
         const UniValue solving_data = options["solving_data"].get_obj();
         if (solving_data.exists("pubkeys")) {
             for (const UniValue& pk_univ : solving_data["pubkeys"].get_array().getValues()) {
-                const std::string& pk_str = pk_univ.get_str();
-                if (!IsHex(pk_str)) {
-                    throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, strprintf("'%s' is not hex", pk_str));
-                }
-                const std::vector<unsigned char> data(ParseHex(pk_str));
-                const CPubKey pubkey(data.begin(), data.end());
-                if (!pubkey.IsFullyValid()) {
-                    throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, strprintf("'%s' is not a valid public key", pk_str));
-                }
+                const CPubKey pubkey = HexToPubKey(pk_univ.get_str());
                 coinControl.m_external_provider.pubkeys.emplace(pubkey.GetID(), pubkey);
                 // Add witness script for pubkeys
                 const CScript wit_script = GetScriptForDestination(WitnessV0KeyHash(pubkey));
@@ -726,7 +718,7 @@ static void SetOptionsInputWeights(const UniValue& inputs, UniValue& options)
             weights.push_back(input);
         }
     }
-    options.pushKV("input_weights", weights);
+    options.pushKV("input_weights", std::move(weights));
 }
 
 RPCHelpMan fundrawtransaction()
@@ -1175,7 +1167,7 @@ static RPCHelpMan bumpfee_helper(std::string method_name)
     for (const bilingual_str& error : errors) {
         result_errors.push_back(error.original);
     }
-    result.pushKV("errors", result_errors);
+    result.pushKV("errors", std::move(result_errors));
 
     return result;
 },
@@ -1396,7 +1388,7 @@ RPCHelpMan sendall()
                 if (recipient.isStr()) {
                     UniValue rkvp(UniValue::VOBJ);
                     rkvp.pushKV(recipient.get_str(), 0);
-                    recipient_key_value_pairs.push_back(rkvp);
+                    recipient_key_value_pairs.push_back(std::move(rkvp));
                     addresses_without_amount.insert(recipient.get_str());
                 } else {
                     recipient_key_value_pairs.push_back(recipient);

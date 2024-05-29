@@ -28,18 +28,19 @@ Platform | Data directory path
 ---------|--------------------
 Linux    | `$HOME/.bitcoin/`
 macOS    | `$HOME/Library/Application Support/Bitcoin/`
-Windows  | `%APPDATA%\Bitcoin\` <sup>[\[1\]](#note1)</sup>
+Windows  | `%LOCALAPPDATA%\Bitcoin\` <sup>[\[1\]](#note1)</sup>
 
 2. A custom data directory path can be specified with the `-datadir` option.
 
 3. All content of the data directory, except for `bitcoin.conf` file, is chain-specific. This means the actual data directory paths for non-mainnet cases differ:
 
-Chain option                   | Data directory path
--------------------------------|------------------------------
-`-chain=main` (default)        | *path_to_datadir*`/`
-`-chain=test` or `-testnet`    | *path_to_datadir*`/testnet3/`
-`-chain=signet` or `-signet`   | *path_to_datadir*`/signet/`
-`-chain=regtest` or `-regtest` | *path_to_datadir*`/regtest/`
+Chain option                     | Data directory path
+---------------------------------|------------------------------
+`-chain=main` (default)          | *path_to_datadir*`/`
+`-chain=test` or `-testnet`      | *path_to_datadir*`/testnet3/`
+`-chain=testnet4` or `-testnet4` | *path_to_datadir*`/testnet4/`
+`-chain=signet` or `-signet`     | *path_to_datadir*`/signet/`
+`-chain=regtest` or `-regtest`   | *path_to_datadir*`/regtest/`
 
 ## Data directory layout
 

@@ -3,9 +3,7 @@
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
-#if defined(HAVE_CONFIG_H)
-#include <config/bitcoin-config.h>
-#endif
+#include <config/bitcoin-config.h> // IWYU pragma: keep
 
 #include <core_io.h>
 #include <key_io.h>
@@ -130,7 +128,7 @@ static RPCHelpMan getwalletinfo()
         UniValue scanning(UniValue::VOBJ);
         scanning.pushKV("duration", Ticks<std::chrono::seconds>(pwallet->ScanningDuration()));
         scanning.pushKV("progress", pwallet->ScanningProgress());
-        obj.pushKV("scanning", scanning);
+        obj.pushKV("scanning", std::move(scanning));
     } else {
         obj.pushKV("scanning", false);
     }
@@ -174,11 +172,11 @@ static RPCHelpMan listwalletdir()
     for (const auto& path : ListDatabases(GetWalletDir())) {
         UniValue wallet(UniValue::VOBJ);
         wallet.pushKV("name", path.utf8string());
-        wallets.push_back(wallet);
+        wallets.push_back(std::move(wallet));
     }
 
     UniValue result(UniValue::VOBJ);
-    result.pushKV("wallets", wallets);
+    result.pushKV("wallets", std::move(wallets));
     return result;
 },
     };

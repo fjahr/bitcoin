@@ -68,12 +68,6 @@ std::optional<std::string> CheckPackageMempoolAcceptResult(const Package& txns,
             return strprintf("tx %s unexpectedly failed: %s", wtxid.ToString(), atmp_result.m_state.ToString());
         }
 
-        //m_replaced_transactions should exist iff the result was VALID
-        if (atmp_result.m_replaced_transactions.has_value() != valid) {
-            return strprintf("tx %s result should %shave m_replaced_transactions",
-                                    wtxid.ToString(), valid ? "" : "not ");
-        }
-
         // m_vsize and m_base_fees should exist iff the result was VALID or MEMPOOL_ENTRY
         const bool mempool_entry{atmp_result.m_result_type == MempoolAcceptResult::ResultType::MEMPOOL_ENTRY};
         if (atmp_result.m_base_fees.has_value() != (valid || mempool_entry)) {
@@ -125,9 +119,15 @@ void CheckMempoolV3Invariants(const CTxMemPool& tx_pool)
     for (const auto& tx_info : tx_pool.infoAll()) {
         const auto& entry = *Assert(tx_pool.GetEntry(tx_info.tx->GetHash()));
         if (tx_info.tx->nVersion == 3) {
+            // Check that special maximum virtual size is respected
+            Assert(entry.GetTxSize() <= V3_MAX_VSIZE);
+
             // Check that special v3 ancestor/descendant limits and rules are always respected
             Assert(entry.GetCountWithDescendants() <= V3_DESCENDANT_LIMIT);
             Assert(entry.GetCountWithAncestors() <= V3_ANCESTOR_LIMIT);
+            Assert(entry.GetSizeWithDescendants() <= V3_MAX_VSIZE + V3_CHILD_MAX_VSIZE);
+            Assert(entry.GetSizeWithAncestors() <= V3_MAX_VSIZE + V3_CHILD_MAX_VSIZE);
+
             // If this transaction has at least 1 ancestor, it's a "child" and has restricted weight.
             if (entry.GetCountWithAncestors() > 1) {
                 Assert(entry.GetTxSize() <= V3_CHILD_MAX_VSIZE);

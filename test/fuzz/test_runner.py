@@ -11,6 +11,7 @@ import argparse
 import configparser
 import logging
 import os
+import platform
 import random
 import subprocess
 import sys
@@ -18,7 +19,7 @@ import sys
 
 def get_fuzz_env(*, target, source_dir):
     symbolizer = os.environ.get('LLVM_SYMBOLIZER_PATH', "/usr/bin/llvm-symbolizer")
-    return {
+    fuzz_env = {
         'FUZZ': target,
         'UBSAN_OPTIONS':
         f'suppressions={source_dir}/test/sanitizer_suppressions/ubsan:print_stacktrace=1:halt_on_error=1:report_error_type=1',
@@ -27,6 +28,10 @@ def get_fuzz_env(*, target, source_dir):
         'ASAN_SYMBOLIZER_PATH':symbolizer,
         'MSAN_SYMBOLIZER_PATH':symbolizer,
     }
+    if platform.system() == "Windows":
+        # On Windows, `env` option must include valid `SystemRoot`.
+        fuzz_env = {**fuzz_env, 'SystemRoot': os.environ.get('SystemRoot')}
+    return fuzz_env
 
 
 def main():
@@ -210,12 +215,12 @@ def transform_process_message_target(targets, src_dir):
     p2p_msg_target = "process_message"
     if (p2p_msg_target, {}) in targets:
         lines = subprocess.run(
-            ["git", "grep", "--function-context", "g_all_net_message_types{", src_dir / "src" / "protocol.cpp"],
+            ["git", "grep", "--function-context", "ALL_NET_MESSAGE_TYPES{", src_dir / "src" / "protocol.h"],
             check=True,
             stdout=subprocess.PIPE,
             text=True,
         ).stdout.splitlines()
-        lines = [l.split("::", 1)[1].split(",")[0].lower() for l in lines if l.startswith("src/protocol.cpp-    NetMsgType::")]
+        lines = [l.split("::", 1)[1].split(",")[0].lower() for l in lines if l.startswith("src/protocol.h-    NetMsgType::")]
         assert len(lines)
         targets += [(p2p_msg_target, {"LIMIT_TO_MESSAGE_TYPE": m}) for m in lines]
     return targets
