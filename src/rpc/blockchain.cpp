@@ -2828,9 +2828,9 @@ static RPCHelpMan loadtxoutset()
             heights_formatted));
     }
     CBlockIndex* snapshot_start_block = WITH_LOCK(::cs_main,
-            return chainman.m_blockman.LookupBlockIndex(base_blockhash));
+            return chainman.ActiveTip()->GetAncestor(base_blockheight));
 
-    if (!snapshot_start_block) {
+    if (!snapshot_start_block || (snapshot_start_block->GetBlockHash() != base_blockhash)) {
         throw JSONRPCError(
             RPC_INTERNAL_ERROR,
             strprintf("The base block header (%s) must appear in the headers chain. Make sure all headers are syncing, and call this RPC again.",
