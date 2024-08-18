@@ -3306,7 +3306,7 @@ bool CWallet::AttachChain(const std::shared_ptr<CWallet>& walletInstance, interf
         // if necessary.
         if (chain.havePruned() || chain.hasAssumedValidChain()) {
             int block_height = *tip_height;
-            while (block_height > 0 && chain.haveBlockOnDisk(block_height - 1) && rescan_height != block_height) {
+            while (block_height > 0 && rescan_height != block_height && chain.haveBlockOnDisk(block_height - 1)) {
                 --block_height;
             }
 
