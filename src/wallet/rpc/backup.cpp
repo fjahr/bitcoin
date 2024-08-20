@@ -1852,7 +1852,12 @@ RPCHelpMan backupwallet()
                 {
                     {"destination", RPCArg::Type::STR, RPCArg::Optional::NO, "The destination directory or file"},
                 },
-                RPCResult{RPCResult::Type::NONE, "", ""},
+                RPCResult{
+                    RPCResult::Type::OBJ, "", "",
+                    {
+                        {RPCResult::Type::STR_HEX, "last_sync_block", /*optional=*/true, "Upon loading the back will try to sync from this block if it is still in the best chain."},
+                    }
+                },
                 RPCExamples{
                     HelpExampleCli("backupwallet", "\"backup.dat\"")
             + HelpExampleRpc("backupwallet", "\"backup.dat\"")
@@ -1873,7 +1878,12 @@ RPCHelpMan backupwallet()
         throw JSONRPCError(RPC_WALLET_ERROR, "Error: Wallet backup failed!");
     }
 
-    return UniValue::VNULL;
+    UniValue obj(UniValue::VOBJ);
+    const auto maybe_locator = pwallet->ReadLatestLocator();
+    if (maybe_locator) {
+        obj.pushKV("last_sync_block", maybe_locator.value().GetHex());
+    }
+    return obj;
 },
     };
 }
@@ -1928,6 +1938,7 @@ RPCHelpMan restorewallet()
 
     UniValue obj(UniValue::VOBJ);
     obj.pushKV("name", wallet->GetName());
+
     PushWarnings(warnings, obj);
 
     return obj;

@@ -3229,6 +3229,15 @@ std::shared_ptr<CWallet> CWallet::Create(WalletContext& context, const std::stri
     return walletInstance;
 }
 
+const std::optional<uint256> CWallet::ReadLatestLocator() const {
+    WalletBatch batch(GetDatabase());
+    CBlockLocator locator;
+    if (batch.ReadBestBlock(locator)) {
+        return locator.vHave.front();
+    }
+    return std::nullopt;
+}
+
 bool CWallet::AttachChain(const std::shared_ptr<CWallet>& walletInstance, interfaces::Chain& chain, const bool rescan_required, bilingual_str& error, std::vector<bilingual_str>& warnings)
 {
     LOCK(walletInstance->cs_wallet);

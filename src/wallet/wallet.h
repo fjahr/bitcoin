@@ -451,6 +451,8 @@ public:
      */
     const std::string& GetName() const { return m_name; }
 
+    const std::optional<uint256> ReadLatestLocator() const;
+
     typedef std::map<unsigned int, CMasterKey> MasterKeyMap;
     MasterKeyMap mapMasterKeys;
     unsigned int nMasterKeyMaxID = 0;

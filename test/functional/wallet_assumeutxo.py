@@ -84,7 +84,9 @@ class AssumeutxoTest(BitcoinTestFramework):
             assert_equal(n.getblockchaininfo()[
                          "headers"], SNAPSHOT_BASE_HEIGHT)
 
-        w.backupwallet("backup_w.dat")
+        res = w.backupwallet("backup_w.dat")
+        assert res["last_sync_block"] != n0.getblockhash(299)
+        assert_equal(res["last_sync_block"], n0.getblockhash(199))
 
         self.log.info("-- Testing assumeutxo")
 
