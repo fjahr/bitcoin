@@ -836,7 +836,7 @@ namespace { // Variables internal to initialization process only
 int nMaxConnections;
 int nUserMaxConnections;
 int nFD;
-ServiceFlags nLocalServices = ServiceFlags(NODE_NETWORK_LIMITED | NODE_WITNESS);
+ServiceFlags local_services = ServiceFlags(NODE_NETWORK_LIMITED | NODE_WITNESS);
 int64_t peer_connect_timeout;
 std::set<BlockFilterType> g_enabled_filter_types;
 
@@ -951,7 +951,7 @@ bool AppInitParameterInteraction(const ArgsManager& args)
 
     // Signal NODE_P2P_V2 if BIP324 v2 transport is enabled.
     if (args.GetBoolArg("-v2transport", DEFAULT_V2_TRANSPORT)) {
-        nLocalServices = ServiceFlags(nLocalServices | NODE_P2P_V2);
+        local_services = ServiceFlags(local_services | NODE_P2P_V2);
     }
 
     // Signal NODE_COMPACT_FILTERS if peerblockfilters and basic filters index are both enabled.
@@ -960,7 +960,7 @@ bool AppInitParameterInteraction(const ArgsManager& args)
             return InitError(_("Cannot set -peerblockfilters without -blockfilterindex."));
         }
 
-        nLocalServices = ServiceFlags(nLocalServices | NODE_COMPACT_FILTERS);
+        local_services = ServiceFlags(local_services | NODE_COMPACT_FILTERS);
     }
 
     if (args.GetIntArg("-prune", 0)) {
@@ -1039,7 +1039,7 @@ bool AppInitParameterInteraction(const ArgsManager& args)
     SetMockTime(args.GetIntArg("-mocktime", 0)); // SetMockTime(0) is a no-op
 
     if (args.GetBoolArg("-peerbloomfilters", DEFAULT_PEERBLOOMFILTERS))
-        nLocalServices = ServiceFlags(nLocalServices | NODE_BLOOM);
+        local_services = ServiceFlags(local_services | NODE_BLOOM);
 
     if (args.IsArgSet("-test")) {
         if (chainparams.GetChainType() != ChainType::REGTEST) {
@@ -1703,7 +1703,7 @@ bool AppInitMain(NodeContext& node, interfaces::BlockAndHeaderTipInfo* tip_info)
         // Prior to setting NODE_NETWORK, check if we can provide historical blocks.
         if (!WITH_LOCK(chainman.GetMutex(), return chainman.BackgroundSyncInProgress())) {
             LogPrintf("Setting NODE_NETWORK on non-prune mode\n");
-            nLocalServices = ServiceFlags(nLocalServices | NODE_NETWORK);
+            local_services = ServiceFlags(local_services | NODE_NETWORK);
         } else {
             LogPrintf("Running node in NODE_NETWORK_LIMITED mode until snapshot background sync completes\n");
         }
@@ -1835,7 +1835,7 @@ bool AppInitMain(NodeContext& node, interfaces::BlockAndHeaderTipInfo* tip_info)
     StartMapPort(args.GetBoolArg("-upnp", DEFAULT_UPNP), args.GetBoolArg("-natpmp", DEFAULT_NATPMP));
 
     CConnman::Options connOptions;
-    connOptions.nLocalServices = nLocalServices;
+    connOptions.m_local_services = local_services;
     connOptions.m_max_automatic_connections = nMaxConnections;
     connOptions.uiInterface = &uiInterface;
     connOptions.m_banman = node.banman.get();
