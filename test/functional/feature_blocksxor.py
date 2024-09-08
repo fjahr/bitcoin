@@ -20,6 +20,7 @@ from test_framework.wallet import MiniWallet
 class BlocksXORTest(BitcoinTestFramework):
     def set_test_params(self):
         self.num_nodes = 1
+        self.setup_clean_chain = True
         self.extra_args = [[
             '-blocksxor=1',
             '-fastprune=1',             # use smaller block files
@@ -30,9 +31,14 @@ class BlocksXORTest(BitcoinTestFramework):
         self.log.info("Mine some blocks, to create multiple blk*.dat/rev*.dat files")
         node = self.nodes[0]
         wallet = MiniWallet(node)
+        self.generate(wallet, 200)
         for _ in range(5):
             wallet.send_self_transfer(from_node=node, target_weight=80000)
             self.generate(wallet, 1)
+
+        # Check that XOR key is randomized
+        xor_key = node.read_xor_key()
+        assert(xor_key != NULL_BLK_XOR_KEY)
 
         block_files = list(node.blocks_path.glob('blk[0-9][0-9][0-9][0-9][0-9].dat'))
         undo_files  = list(node.blocks_path.glob('rev[0-9][0-9][0-9][0-9][0-9].dat'))
@@ -41,7 +47,6 @@ class BlocksXORTest(BitcoinTestFramework):
 
         self.log.info("Shut down node and un-XOR block/undo files manually")
         self.stop_node(0)
-        xor_key = node.read_xor_key()
         for data_file in sorted(block_files + undo_files):
             self.log.debug(f"Rewriting file {data_file}...")
             with open(data_file, 'rb+') as f:
