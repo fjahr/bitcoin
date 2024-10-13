@@ -661,6 +661,7 @@ static RPCHelpMan getblocktemplate()
     ChainstateManager& chainman = EnsureChainman(node);
     Mining& miner = EnsureMining(node);
     LOCK(cs_main);
+    std::vector<uint256> invalidated{miner.rollback()};
     uint256 tip{CHECK_NONFATAL(miner.getTip()).value().hash};
 
     std::string strMode = "template";
@@ -965,6 +966,8 @@ static RPCHelpMan getblocktemplate()
     if (!block_template->getCoinbaseCommitment().empty()) {
         result.pushKV("default_witness_commitment", HexStr(block_template->getCoinbaseCommitment()));
     }
+
+    miner.reconsider(invalidated);
 
     return result;
 },

@@ -46,6 +46,7 @@
 #include <policy/settings.h>
 #include <primitives/block.h>
 #include <primitives/transaction.h>
+#include <rpc/blockchain.h>
 #include <rpc/protocol.h>
 #include <rpc/server.h>
 #include <support/allocators/secure.h>
@@ -967,6 +968,34 @@ public:
         CBlockIndex* tip{chainman().ActiveChain().Tip()};
         if (!tip) return {};
         return BlockRef{tip->GetBlockHash(), tip->nHeight};
+    }
+
+    std::vector<uint256> rollback() override
+    {
+        LOCK(::cs_main);
+        std::vector<uint256> result;
+        CBlockIndex* tip{chainman().ActiveChain().Tip()};
+        if (!tip) return {};
+        if (chainman().GetConsensus().enforce_BIP94) {
+            while (tip->nBits == 0x1d00ffff) {
+                InvalidateBlock(chainman(), tip->GetBlockHash());
+                result.emplace_back(tip->GetBlockHash());
+                auto block_ref = waitTipChanged(tip->GetBlockHash(), std::chrono::seconds{2});
+                // time.sleep(1);
+                tip = chainman().ActiveChain().Tip();
+            }
+        }
+        return result;
+    }
+
+    void reconsider(std::vector<uint256> invalidated) override
+    {
+        LOCK(::cs_main);
+        if (!chainman().GetConsensus().enforce_BIP94 || invalidated.empty()) return;
+
+        for (uint256 bh : invalidated) {
+            ReconsiderBlock(chainman(), bh);
+        }
     }
 
     BlockRef waitTipChanged(uint256 current_tip, MillisecondsDouble timeout) override
