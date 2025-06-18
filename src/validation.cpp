@@ -2660,7 +2660,10 @@ bool Chainstate::ConnectBlock(const CBlock& block, BlockValidationState& state, 
     // doesn't invalidate pointers into the vector, and keep txsdata in scope
     // for as long as `control`.
     std::optional<CCheckQueueControl<CScriptCheck>> control;
-    if (auto& queue = m_chainman.GetCheckQueue(); queue.HasThreads() && fScriptChecks) control.emplace(queue);
+    if (fScriptChecks) {
+        auto& queue = m_chainman.GetCheckQueue();
+        control.emplace(queue);
+    }
 
     std::vector<PrecomputedTransactionData> txsdata(block.vtx.size());
 
@@ -2726,17 +2729,8 @@ bool Chainstate::ConnectBlock(const CBlock& block, BlockValidationState& state, 
             // If parallel script checking is possible (worker threads are available) the checks are appended to a
             // vector without running them. The vector is then added to control which runs the checks asynchronously.
             // Otherwise, CheckInputScripts runs the checks on a single thread before returning.
-            if (control) {
-                std::vector<CScriptCheck> vChecks = PrepareInputScriptChecks(tx, view, flags, fCacheResults, fCacheResults, txsdata[i], m_chainman.m_validation_cache);
-                control->Add(std::move(vChecks));
-            } else {
-                if (!CheckInputScripts(tx, tx_state, view, flags, fCacheResults, fCacheResults, txsdata[i], m_chainman.m_validation_cache)) {
-                    // Any transaction validation failure in ConnectBlock is a block consensus failure
-                    state.Invalid(BlockValidationResult::BLOCK_CONSENSUS,
-                                  tx_state.GetRejectReason(), tx_state.GetDebugMessage());
-                    break;
-                }
-            }
+            std::vector<CScriptCheck> vChecks = PrepareInputScriptChecks(tx, view, flags, fCacheResults, fCacheResults, txsdata[i], m_chainman.m_validation_cache);
+            control->Add(std::move(vChecks));
         }
 
         CTxUndo undoDummy;
