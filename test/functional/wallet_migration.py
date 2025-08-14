@@ -1234,7 +1234,7 @@ class WalletMigrationTest(BitcoinTestFramework):
     def test_miniscript(self):
         # It turns out that due to how signing logic works, legacy wallets that have valid miniscript witnessScripts
         # and the private keys for them can still sign and spend them, even though output scripts involving them
-        # as a witnessScript would not be detected as ISMINE_SPENDABLE.
+        # as a witnessScript would not be detected as ismine.
         self.log.info("Test migration of a legacy wallet containing miniscript")
         def_wallet = self.master_node.get_wallet_rpc(self.default_wallet_name)
         wallet = self.create_legacy_wallet("miniscript")
@@ -1287,7 +1287,7 @@ class WalletMigrationTest(BitcoinTestFramework):
 
     def test_taproot(self):
         # It turns out that due to how signing logic works, legacy wallets that have the private key for a Taproot
-        # output key will be able to sign and spend those scripts, even though they would not be detected as ISMINE_SPENDABLE.
+        # output key will be able to sign and spend those scripts, even though they would not be detected as ismine.
         self.log.info("Test migration of Taproot scripts")
         def_wallet = self.master_node.get_wallet_rpc(self.default_wallet_name)
         wallet = self.create_legacy_wallet("taproot")
@@ -1352,7 +1352,7 @@ class WalletMigrationTest(BitcoinTestFramework):
         add_ms_res = wallet.addmultisigaddress(nrequired=1, keys=[pubkey.hex()])
         addr = add_ms_res["address"]
 
-        # The multisig address should be ISMINE_NO but we should have the script info
+        # The multisig address should not be ismine but we should have the script info
         addr_info = wallet.getaddressinfo(addr)
         assert_equal(addr_info["ismine"], False)
         assert "hex" in addr_info

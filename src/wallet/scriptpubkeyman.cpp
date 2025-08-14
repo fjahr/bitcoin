@@ -46,7 +46,7 @@ enum class IsMineSigVersion
 };
 
 /**
- * This is an internal representation of isminetype + invalidity.
+ * This is an internal representation of ismine + invalidity.
  * Its order is significant, as we return the max of all explored
  * possibilities.
  */
