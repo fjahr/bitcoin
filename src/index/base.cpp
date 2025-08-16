@@ -110,9 +110,24 @@ bool BaseIndex::Init()
     } else {
         // Setting the best block to the locator's top block. If it is not part of the
         // best chain, we will rewind to the fork point during index sync
-        const CBlockIndex* locator_index{m_chainstate->m_blockman.LookupBlockIndex(locator.vHave.at(0))};
+        // We may need to look through several blocks in case there was an unclean
+        // shutdown and our best block was not flushed to disk yet
+        const CBlockIndex* locator_index = nullptr;
+        for (const uint256& hash : locator.vHave) {
+            locator_index = m_chainstate->m_blockman.LookupBlockIndex(hash);
+            if (locator_index) {
+                break;
+            }
+        }
         if (!locator_index) {
             return InitError(Untranslated(strprintf("best block of %s not found. Please rebuild the index.", GetName())));
+        }
+        if (locator_index->GetBlockHash() != locator.vHave.at(0)) {
+            LogWarning("Index %s: best block %s not found, recovered to block %s at height %d",
+                      GetName(),
+                      locator.vHave.at(0).ToString(),
+                      locator_index->GetBlockHash().ToString(),
+                      locator_index->nHeight);
         }
         SetBestBlockIndex(locator_index);
     }
