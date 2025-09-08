@@ -23,6 +23,7 @@ class CoinStatsIndex final : public BaseIndex
 {
 private:
     std::unique_ptr<BaseIndex::DB> m_db;
+    std::chrono::milliseconds m_total_compaction_time{0};
 
     MuHash3072 m_muhash;
     uint64_t m_transaction_output_count{0};

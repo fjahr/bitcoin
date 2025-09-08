@@ -229,7 +229,16 @@ bool CoinStatsIndex::CustomAppend(const interfaces::BlockInfo& block)
     // syncing.
     if (block.height % 10000 == 0) {
         LogInfo("Compacting database of coinstatsindex");
+        auto start = std::chrono::steady_clock::now();
         m_db->CompactFull();
+        auto end = std::chrono::steady_clock::now();
+
+        auto duration_ms = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
+        m_total_compaction_time += duration_ms;
+
+        LogInfo("Database compaction completed in %d ms (total: %d ms)",
+                duration_ms.count(),
+                m_total_compaction_time.count());
     }
 
     // Intentionally do not update DB_MUHASH here so it stays in sync with
