@@ -666,6 +666,13 @@ public:
         }
         return false;
     }
+    bool isAncestorOfLastFlushedBlock(const uint256& block_hash) override
+    {
+        LOCK(::cs_main);
+        const CBlockIndex* block{chainman().m_blockman.LookupBlockIndex(block_hash)};
+        const CBlockIndex* last_flushed{chainman().ValidatedChainstate().GetLastFlushedBlock()};
+        return block && last_flushed && last_flushed->GetAncestor(block->nHeight) == block;
+    }
     RBFTransactionState isRBFOptIn(const CTransaction& tx) override
     {
         if (!m_node.mempool) return IsRBFOptInEmptyMempool(tx);
