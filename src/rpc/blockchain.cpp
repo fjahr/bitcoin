@@ -2991,6 +2991,9 @@ static RPCHelpMan getblockfilter()
     };
 }
 
+
+
+
 /**
  * Serialize the UTXO set to a file for loading elsewhere.
  *
@@ -3001,7 +3004,7 @@ static RPCHelpMan dumptxoutset()
     return RPCHelpMan{
         "dumptxoutset",
         "Write the serialized UTXO set to a file. This can be used in loadtxoutset afterwards if this snapshot height is supported in the chainparams as well.\n"
-        "This creates a temporary UTXO database when rolling back, keeping the main chain intact. Should the node experience an unclean shutdown the temporary database may need to be removed from the datadir manually.\n"
+        "This uses a delta-based approach for rollbacks, tracking only the changes rather than copying the entire UTXO set.\n"
         "For deep rollbacks, make sure to use no RPC timeout (bitcoin-cli -rpcclienttimeout=0) as it may take several minutes.",
         {
             {"path", RPCArg::Type::STR, RPCArg::Optional::NO, "Path to the output file. If relative, will be prefixed by datadir."},
@@ -3127,6 +3130,142 @@ public:
     }
 };
 
+/**
+ * A cursor that merges a snapshot cursor with a delta database,
+ * skipping coins marked as deleted. Coins in the delta database
+ * take precedence over coins in the snapshot.
+ */
+class MergedCoinsViewCursor : public CCoinsViewCursor
+{
+private:
+    std::unique_ptr<CCoinsViewCursor> m_snapshot_cursor;
+    std::unique_ptr<CCoinsViewCursor> m_delta_cursor;
+    const std::set<COutPoint>& m_deleted;
+
+    COutPoint m_current_key;
+    Coin m_current_coin;
+    bool m_valid{false};
+
+    // Track current positions
+    COutPoint m_snapshot_key;
+    Coin m_snapshot_coin;
+    bool m_snapshot_valid{false};
+
+    COutPoint m_delta_key;
+    Coin m_delta_coin;
+    bool m_delta_valid{false};
+
+    void ReadSnapshot() {
+        m_snapshot_valid = m_snapshot_cursor && m_snapshot_cursor->Valid();
+        if (m_snapshot_valid) {
+            m_snapshot_cursor->GetKey(m_snapshot_key);
+            m_snapshot_cursor->GetValue(m_snapshot_coin);
+        }
+    }
+
+    void ReadDelta() {
+        m_delta_valid = m_delta_cursor && m_delta_cursor->Valid();
+        if (m_delta_valid) {
+            m_delta_cursor->GetKey(m_delta_key);
+            m_delta_cursor->GetValue(m_delta_coin);
+        }
+    }
+
+    void AdvanceSnapshot() {
+        if (m_snapshot_cursor) {
+            m_snapshot_cursor->Next();
+            ReadSnapshot();
+        }
+    }
+
+    void AdvanceDelta() {
+        if (m_delta_cursor) {
+            m_delta_cursor->Next();
+            ReadDelta();
+        }
+    }
+
+    void AdvanceToNext() {
+        m_valid = false;
+
+        while (m_snapshot_valid || m_delta_valid) {
+            // Determine which source has the smaller key
+            bool use_snapshot = false;
+            bool use_delta = false;
+
+            if (m_snapshot_valid && m_delta_valid) {
+                if (m_snapshot_key < m_delta_key) {
+                    use_snapshot = true;
+                } else if (m_delta_key < m_snapshot_key) {
+                    use_delta = true;
+                } else {
+                    // Same key - delta takes precedence, skip snapshot
+                    use_delta = true;
+                    AdvanceSnapshot();
+                }
+            } else if (m_snapshot_valid) {
+                use_snapshot = true;
+            } else {
+                use_delta = true;
+            }
+
+            if (use_snapshot) {
+                // Check if this coin is marked as deleted
+                if (m_deleted.count(m_snapshot_key) == 0) {
+                    m_current_key = m_snapshot_key;
+                    m_current_coin = m_snapshot_coin;
+                    m_valid = true;
+                    AdvanceSnapshot();
+                    return;
+                }
+                AdvanceSnapshot();
+            } else if (use_delta) {
+                m_current_key = m_delta_key;
+                m_current_coin = m_delta_coin;
+                m_valid = true;
+                AdvanceDelta();
+                return;
+            }
+        }
+    }
+
+public:
+    MergedCoinsViewCursor(
+        std::unique_ptr<CCoinsViewCursor> snapshot_cursor,
+        std::unique_ptr<CCoinsViewCursor> delta_cursor,
+        const std::set<COutPoint>& deleted,
+        const uint256& best_block)
+        : CCoinsViewCursor(best_block)
+        , m_snapshot_cursor(std::move(snapshot_cursor))
+        , m_delta_cursor(std::move(delta_cursor))
+        , m_deleted(deleted)
+    {
+        ReadSnapshot();
+        ReadDelta();
+        AdvanceToNext();
+    }
+
+    bool GetKey(COutPoint& key) const override {
+        if (!m_valid) return false;
+        key = m_current_key;
+        return true;
+    }
+
+    bool GetValue(Coin& coin) const override {
+        if (!m_valid) return false;
+        coin = m_current_coin;
+        return true;
+    }
+
+    bool Valid() const override {
+        return m_valid;
+    }
+
+    void Next() override {
+        AdvanceToNext();
+    }
+};
+
 UniValue CreateRolledBackUTXOSnapshot(
     NodeContext& node,
     Chainstate& chainstate,
@@ -3135,12 +3274,16 @@ UniValue CreateRolledBackUTXOSnapshot(
     const fs::path& path,
     const fs::path& tmppath)
 {
-    // Create a temporary leveldb to store the UTXO set that is being rolled back
-    std::string temp_db_name{strprintf("temp_utxo_%d", target->nHeight)};
+    const CBlockIndex* current_tip{WITH_LOCK(::cs_main, return chainstate.m_chain.Tip())};
+
+    LogInfo("Using delta-based rollback from height %d to %d (%d blocks)",
+            current_tip->nHeight, target->nHeight, current_tip->nHeight - target->nHeight);
+
+    // Create delta database to store coins that were spent between target and tip
+    std::string temp_db_name{strprintf("delta_utxo_%d", target->nHeight)};
     fs::path temp_db_path{fsbridge::AbsPathJoin(tmppath.parent_path(), fs::u8path(temp_db_name))};
     TemporaryUTXODatabase temp_db_cleaner{temp_db_path};
 
-    // Create temporary database
     DBParams db_params{
         .path = temp_db_path,
         .cache_bytes = size_t(1) << 24,  // 16MB cache
@@ -3150,54 +3293,25 @@ UniValue CreateRolledBackUTXOSnapshot(
         .options = DBOptions{}
     };
 
-    std::unique_ptr<CCoinsViewDB> temp_db = std::make_unique<CCoinsViewDB>(
+    std::unique_ptr<CCoinsViewDB> delta_db = std::make_unique<CCoinsViewDB>(
         std::move(db_params),
         CoinsViewOptions{}
     );
 
-    LogInfo("Copying current UTXO set to temporary database.");
-    {
-        WITH_LOCK(::cs_main, chainstate.ForceFlushStateToDisk());
-        CCoinsViewCache temp_cache(temp_db.get());
-        temp_cache.SetBestBlock(chainstate.m_chain.Tip()->GetBlockHash());
+    CCoinsViewCache delta_cache(delta_db.get());
+    delta_cache.SetBestBlock(target->GetBlockHash());
 
-        std::unique_ptr<CCoinsViewCursor> cursor;
-        WITH_LOCK(::cs_main, cursor = chainstate.CoinsDB().Cursor());
+    // Track coins that exist in snapshot but should be excluded (created after target)
+    std::set<COutPoint> deleted_from_snapshot;
 
-        size_t coins_count = 0;
-        while (cursor->Valid()) {
-            node.rpc_interruption_point();
+    // Flush current state to ensure snapshot consistency
+    WITH_LOCK(::cs_main, chainstate.ForceFlushStateToDisk());
 
-            COutPoint key;
-            Coin coin;
-            if (cursor->GetKey(key) && cursor->GetValue(coin)) {
-                temp_cache.AddCoin(key, std::move(coin), false);
-                coins_count++;
-
-                // Log every 10M coins (optimized for mainnet)
-                if (coins_count % 10'000'000 == 0) {
-                    LogInfo("Copying UTXO set: %uM coins copied.", coins_count / 1'000'000);
-                }
-
-                // Flush periodically
-                if (coins_count % 100'000 == 0) {
-                    temp_cache.Flush();
-                }
-            }
-            cursor->Next();
-        }
-
-        temp_cache.Flush();
-        LogInfo("UTXO set copy complete: %u coins total", coins_count);
-    }
-
-    LogInfo("Rolling back from height %d to %d", chainstate.m_chain.Tip()->nHeight, target->nHeight);
-
-    const CBlockIndex* block_index{chainstate.m_chain.Tip()};
-    CCoinsViewCache rollback_cache(temp_db.get());
-    rollback_cache.SetBestBlock(block_index->GetBlockHash());
+    // Process blocks in reverse order from tip to target
+    const CBlockIndex* block_index = current_tip;
     size_t blocks_processed = 0;
-    DisconnectResult res;
+
+    LogInfo("Processing undo data for %d blocks.", current_tip->nHeight - target->nHeight);
 
     while (block_index->nHeight > target->nHeight) {
         node.rpc_interruption_point();
@@ -3208,43 +3322,142 @@ UniValue CreateRolledBackUTXOSnapshot(
                 strprintf("Failed to read block at height %d", block_index->nHeight));
         }
 
-        WITH_LOCK(::cs_main, res = chainstate.DisconnectBlock(block, block_index, rollback_cache));
-        if (res == DISCONNECT_FAILED) {
+        CBlockUndo blockUndo;
+        if (!node.chainman->m_blockman.ReadBlockUndo(blockUndo, *block_index)) {
             throw JSONRPCError(RPC_INTERNAL_ERROR,
-                strprintf("Failed to roll back block at height %d", block_index->nHeight));
+                strprintf("Failed to read undo data for block at height %d", block_index->nHeight));
+        }
+
+        // Process transactions in reverse order (same as DisconnectBlock)
+        for (int i = block.vtx.size() - 1; i >= 0; i--) {
+            const CTransaction& tx = *block.vtx[i];
+
+            // First, undo the outputs (remove coins created by this tx)
+            for (size_t j = tx.vout.size(); j > 0;) {
+                --j;
+                if (tx.vout[j].scriptPubKey.IsUnspendable()) {
+                    continue;
+                }
+
+                COutPoint outpoint(tx.GetHash(), j);
+
+                // Check if this coin is in delta (was spent in a later block we already processed)
+                if (delta_cache.HaveCoin(outpoint)) {
+                    // It was restored from a later block's undo data, remove from delta
+                    delta_cache.SpendCoin(outpoint);
+                } else {
+                    // It must exist in the current UTXO set (snapshot), mark for deletion
+                    deleted_from_snapshot.insert(outpoint);
+                }
+            }
+
+            // Then, undo the inputs (restore coins spent by this tx)
+            // Skip coinbase transactions (they don't spend anything)
+            if (!tx.IsCoinBase()) {
+                const CTxUndo& txundo = blockUndo.vtxundo[i - 1];
+                if (txundo.vprevout.size() != tx.vin.size()) {
+                    throw JSONRPCError(RPC_INTERNAL_ERROR,
+                        strprintf("Undo data mismatch for tx %s in block %d",
+                                  tx.GetHash().ToString(), block_index->nHeight));
+                }
+
+                for (size_t j = tx.vin.size(); j > 0;) {
+                    --j;
+                    const COutPoint& prevout = tx.vin[j].prevout;
+                    Coin coin = txundo.vprevout[j];
+
+                    // If it was marked as deleted (created and removed in the rollback range),
+                    // unmark it since we're now restoring it
+                    deleted_from_snapshot.erase(prevout);
+
+                    // Add to delta - this coin existed at target height
+                    delta_cache.AddCoin(prevout, std::move(coin), false);
+                }
+            }
         }
 
         blocks_processed++;
         if (blocks_processed % 500 == 0) {
-            LogInfo("Rolled back %d blocks.", blocks_processed);
-            rollback_cache.Flush();
+            LogInfo("Processed %d blocks, delta size: %zu coins, deletions: %zu",
+                    blocks_processed, delta_cache.GetCacheSize(), deleted_from_snapshot.size());
+            delta_cache.Flush();
         }
 
         block_index = block_index->pprev;
     }
 
-    CHECK_NONFATAL(rollback_cache.GetBestBlock() == target->GetBlockHash());
-    rollback_cache.Flush();
+    delta_cache.Flush();
 
-    LogInfo("Rollback complete. Computing UTXO statistics for created txoutset dump.");
-    std::optional<CCoinsStats> maybe_stats = GetUTXOStats(temp_db.get(),
-                                                          chainstate.m_blockman,
-                                                          CoinStatsHashType::HASH_SERIALIZED,
-                                                          node.rpc_interruption_point);
+    LogInfo("Rollback processing complete. Delta has %zu restored coins, %zu coins marked for deletion from snapshot.",
+            delta_cache.GetCacheSize(), deleted_from_snapshot.size());
 
-    if (!maybe_stats) {
-        throw JSONRPCError(RPC_INTERNAL_ERROR, "Unable to compute UTXO statistics");
+    LogInfo("Computing UTXO statistics for merged view.");
+
+    // First pass: count coins and compute hash
+    std::unique_ptr<CCoinsViewCursor> snapshot_cursor;
+    {
+        LOCK(::cs_main);
+        snapshot_cursor = chainstate.CoinsDB().Cursor();
+    }
+    std::unique_ptr<CCoinsViewCursor> delta_cursor = delta_db->Cursor();
+
+    CCoinsStats stats;
+    stats.hashBlock = target->GetBlockHash();
+    stats.nHeight = target->nHeight;
+    stats.coins_count = 0;
+
+    HashWriter ss{};
+    ss << stats.hashBlock;
+
+    COutPoint key;
+    Coin coin;
+
+    MergedCoinsViewCursor stats_cursor(
+        std::move(snapshot_cursor),
+        std::move(delta_cursor),
+        deleted_from_snapshot,
+        target->GetBlockHash()
+    );
+
+    size_t iter = 0;
+    while (stats_cursor.Valid()) {
+        if (iter % 5000 == 0) node.rpc_interruption_point();
+        ++iter;
+
+        if (stats_cursor.GetKey(key) && stats_cursor.GetValue(coin)) {
+            ss << key;
+            ss << coin.out.scriptPubKey.IsUnspendable();
+            if (!coin.out.scriptPubKey.IsUnspendable()) {
+                ss << VARINT_MODE(coin.out.nValue / COIN, VarIntMode::NONNEGATIVE_SIGNED);
+                ss << coin.out.scriptPubKey;
+            }
+            stats.coins_count++;
+        }
+        stats_cursor.Next();
     }
 
-    std::unique_ptr<CCoinsViewCursor> pcursor{temp_db->Cursor()};
-    if (!pcursor) {
-        throw JSONRPCError(RPC_INTERNAL_ERROR, "Unable to create UTXO cursor");
-    }
+    stats.hashSerialized = ss.GetHash();
 
-    LogInfo("Writing snapshot to disk.");
+    LogInfo("Statistics complete: %zu coins, hash: %s. Writing snapshot to disk.",
+            stats.coins_count, stats.hashSerialized.ToString());
+
+    // Second pass: write the snapshot
+    {
+        LOCK(::cs_main);
+        snapshot_cursor = chainstate.CoinsDB().Cursor();
+    }
+    delta_cursor = delta_db->Cursor();
+
+    auto write_cursor = std::make_unique<MergedCoinsViewCursor>(
+        std::move(snapshot_cursor),
+        std::move(delta_cursor),
+        deleted_from_snapshot,
+        target->GetBlockHash()
+    );
+
     return WriteUTXOSnapshot(chainstate,
-                             pcursor.get(),
-                             &(*maybe_stats),
+                             write_cursor.get(),
+                             &stats,
                              target,
                              std::move(afile),
                              path,
@@ -3386,6 +3599,12 @@ UniValue CreateUTXOSnapshot(
                              tmppath,
                              node.rpc_interruption_point);
 }
+
+
+
+
+
+
 
 static RPCHelpMan loadtxoutset()
 {
