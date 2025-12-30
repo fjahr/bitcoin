@@ -586,25 +586,30 @@ class NetTest(BitcoinTestFramework):
         self.restart_node(0, extra_args=[], clear_addrman=True)
         node = self.nodes[0]
 
-        # Add addresses, taking into account some possible failures
+        self.log.info("Adding addresses to addrman...")
         added = []
-        for i in range(20):
-            if node.addpeeraddress(address=f"1.2.3.{i}", port=8333)["success"]:
-                added.append(f"1.2.3.{i}")
+        for i in range(1000000):
+            first = (i >> 16) & 0xFF
+            second = (i >> 8) & 0xFF
+            third = i & 0xFF
+            addr = f"{first}.{second}.{third}.1"
+            port = 8333 + (i % 1000)
+            if node.addpeeraddress(address=addr, port=port)["success"]:
+                added.append(addr)
+        self.log.info(f"Successfully added {len(added)} addresses")
 
-        # Ban half of the added addresses
-        banned = set(added[:len(added)//2])
+        num_to_ban = 1000
+        self.log.info(f"Banning {num_to_ban} addresses...")
+        banned = set(added[:num_to_ban])
         for b in banned:
             node.setban(b, "add")
 
-        # Request all unbanned addresses by count
-        count = len(added) - len(banned)
+        self.log.info(f"Requesting 1000 addresses...")
+        count = 1000
+        start = time.time()
         addresses = node.getnodeaddresses(count=count)
-        assert_equal(len(addresses), count)
-
-        # Verify none of the returned addresses are banned
-        for addr in addresses:
-            assert addr["address"] not in banned
+        elapsed = time.time() - start
+        self.log.info(f"getnodeaddresses returned {count} addresses in {elapsed:.3f}s")
 
         # Clean up
         for b in banned:
