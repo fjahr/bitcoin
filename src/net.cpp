@@ -3534,14 +3534,18 @@ CConnman::~CConnman()
 
 std::vector<CAddress> CConnman::GetAddressesUnsafe(size_t max_addresses, size_t max_pct, std::optional<Network> network, const bool filtered) const
 {
-    // Get all addresses if filtering for banned addresses to avoid undershooting max_addresses in the returned vec
-    std::vector<CAddress> addresses = addrman.GetAddr(m_banman ? 0 : max_addresses, max_pct, network, filtered);
-    if (m_banman) {
-        addresses.erase(std::remove_if(addresses.begin(), addresses.end(),
-                        [this](const CAddress& addr){return m_banman->IsDiscouraged(addr) || m_banman->IsBanned(addr);}),
-                        addresses.end());
-        if (max_addresses && addresses.size() > max_addresses) addresses.resize(max_addresses);
+    auto addresses = addrman.GetAddr(m_banman && max_addresses ? max_addresses * 2 : max_addresses, max_pct, network, filtered);
+    if (!m_banman) return addresses;
+
+    auto is_banned = [this](const CAddress& a) { return m_banman->IsDiscouraged(a) || m_banman->IsBanned(a); };
+    addresses.erase(std::remove_if(addresses.begin(), addresses.end(), is_banned), addresses.end());
+
+    if (max_addresses && addresses.size() < max_addresses) {
+        addresses = addrman.GetAddr(0, max_pct, network, filtered);
+        addresses.erase(std::remove_if(addresses.begin(), addresses.end(), is_banned), addresses.end());
     }
+
+    if (max_addresses && addresses.size() > max_addresses) addresses.resize(max_addresses);
     return addresses;
 }
 
