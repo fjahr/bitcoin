@@ -1,4 +1,4 @@
-ACLOCAL_AMFLAGS = -I build-aux/m4
+ACLOCAL_AMFLAGS = -I autotools-aux/m4
 
 # AM_CFLAGS will be automatically prepended to CFLAGS by Automake when compiling some foo
 # which does not have an explicit foo_CFLAGS variable set.
@@ -221,6 +221,17 @@ endif
 TESTS += batch_example
 endif
 endif
+if ENABLE_MODULE_SCHNORRSIG_FULLAGG
+noinst_PROGRAMS += fullagg_example
+fullagg_example_SOURCES = examples/fullagg.c
+fullagg_example_CPPFLAGS = -I$(top_srcdir)/include -DSECP256K1_STATIC
+fullagg_example_LDADD = libsecp256k1.la
+fullagg_example_LDFLAGS = -static
+if BUILD_WINDOWS
+fullagg_example_LDFLAGS += -lbcrypt
+endif
+TESTS += fullagg_example
+endif
 endif
 
 ### Precomputed tables
@@ -322,10 +333,18 @@ if ENABLE_MODULE_MUSIG
 include src/modules/musig/Makefile.am.include
 endif
 
+if ENABLE_MODULE_SCHNORRSIG_FULLAGG
+include src/modules/schnorrsig_fullagg/Makefile.am.include
+endif
+
 if ENABLE_MODULE_ELLSWIFT
 include src/modules/ellswift/Makefile.am.include
 endif
 
 if ENABLE_MODULE_BATCH
 include src/modules/batch/Makefile.am.include
+endif
+
+if ENABLE_MODULE_SCHNORRSIG_HALFAGG
+include src/modules/schnorrsig_halfagg/Makefile.am.include
 endif

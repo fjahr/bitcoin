@@ -6,6 +6,10 @@ on:
       - '**'
     tags-ignore:
       - '**'
+  schedule:
+    # Run on the default branch every Monday morning.
+    # This also warms the Docker caches after key rotation.
+    - cron: '22 2 * * 1'
 
 concurrency:
   group: ${{ github.event_name != 'pull_request' && github.run_id || github.ref }}
@@ -34,8 +38,10 @@ env:
   EXTRAKEYS: 'no'
   SCHNORRSIG: 'no'
   MUSIG: 'no'
+  SCHNORRSIG_FULLAGG: 'no'
   ELLSWIFT: 'no'
   BATCH: 'no'
+  SCHNORRSIG_HALFAGG: 'no'
   ### test options
   SECP256K1_TEST_ITERS: 64
   BENCH: 'yes'
@@ -49,6 +55,8 @@ jobs:
   docker_cache:
     name: "Build ${{ matrix.arch }} Docker image"
     runs-on: ${{ matrix.runner }}
+    outputs:
+      cache_scope: ${{ steps.cache_timestamp.outputs.period }}
 
     strategy:
       fail-fast: false
@@ -60,6 +68,10 @@ jobs:
             runner: ubuntu-24.04-arm
 
     steps:
+      - name: Get cache validity period
+        id: cache_timestamp
+        run: echo "period=$(($(date +%V) / 4))" >> "$GITHUB_OUTPUT"
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
         with:
@@ -71,8 +83,8 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           file: ./ci/linux-debian.Dockerfile
-          cache-from: type=gha,scope=${{ runner.arch }}
-          cache-to: type=gha,scope=${{ runner.arch }},mode=min
+          cache-from: type=gha,scope=${{ runner.arch }}-${{ steps.cache_timestamp.outputs.period }}
+          cache-to: type=gha,scope=${{ runner.arch }}-${{ steps.cache_timestamp.outputs.period }},mode=min
 
   x86_64-debian:
     name: "x86_64: Linux (Debian stable)"
@@ -84,14 +96,14 @@ jobs:
       matrix:
         configuration:
           - env_vars: { WIDEMUL: 'int64',  RECOVERY: 'yes' }
-          - env_vars: { WIDEMUL: 'int64',                   ECDH: 'yes', EXTRAKEYS: 'yes', SCHNORRSIG: 'yes', MUSIG: 'yes', ELLSWIFT: 'yes', BATCH: 'yes' }
+          - env_vars: { WIDEMUL: 'int64',                   ECDH: 'yes', EXTRAKEYS: 'yes', SCHNORRSIG: 'yes', MUSIG: 'yes', ELLSWIFT: 'yes', BATCH: 'yes', EXPERIMENTAL: 'yes', SCHNORRSIG_HALFAGG: 'yes', SCHNORRSIG_FULLAGG: 'yes' }
           - env_vars: { WIDEMUL: 'int128' }
           - env_vars: { WIDEMUL: 'int128_struct',                                                             ELLSWIFT: 'yes' }
-          - env_vars: { WIDEMUL: 'int128', RECOVERY: 'yes',              EXTRAKEYS: 'yes', SCHNORRSIG: 'yes', MUSIG: 'yes', ELLSWIFT: 'yes', BATCH: 'yes' }
-          - env_vars: { WIDEMUL: 'int128',                  ECDH: 'yes', EXTRAKEYS: 'yes', SCHNORRSIG: 'yes', MUSIG: 'yes', BATCH: 'yes' }
+          - env_vars: { WIDEMUL: 'int128', RECOVERY: 'yes',              EXTRAKEYS: 'yes', SCHNORRSIG: 'yes', MUSIG: 'yes', ELLSWIFT: 'yes', BATCH: 'yes', EXPERIMENTAL: 'yes', SCHNORRSIG_HALFAGG: 'yes', SCHNORRSIG_FULLAGG: 'yes' }
+          - env_vars: { WIDEMUL: 'int128',                  ECDH: 'yes', EXTRAKEYS: 'yes', SCHNORRSIG: 'yes', MUSIG: 'yes', BATCH: 'yes', EXPERIMENTAL: 'yes', SCHNORRSIG_HALFAGG: 'yes', SCHNORRSIG_FULLAGG: 'yes' }
           - env_vars: { WIDEMUL: 'int128', ASM: 'x86_64',                                                     ELLSWIFT: 'yes' }
-          - env_vars: {                    RECOVERY: 'yes',              EXTRAKEYS: 'yes', SCHNORRSIG: 'yes', MUSIG: 'yes', BATCH: 'yes' }
-          - env_vars: { CTIMETESTS: 'no',  RECOVERY: 'yes', ECDH: 'yes', EXTRAKEYS: 'yes', SCHNORRSIG: 'yes', MUSIG: 'yes', BATCH: 'yes', CPPFLAGS: '-DVERIFY' }
+          - env_vars: {                    RECOVERY: 'yes',              EXTRAKEYS: 'yes', SCHNORRSIG: 'yes', MUSIG: 'yes', BATCH: 'yes', EXPERIMENTAL: 'yes', SCHNORRSIG_HALFAGG: 'yes', SCHNORRSIG_FULLAGG: 'yes' }
+          - env_vars: { CTIMETESTS: 'no',  RECOVERY: 'yes', ECDH: 'yes', EXTRAKEYS: 'yes', SCHNORRSIG: 'yes', MUSIG: 'yes', BATCH: 'yes', EXPERIMENTAL: 'yes', SCHNORRSIG_HALFAGG: 'yes', SCHNORRSIG_FULLAGG: 'yes', CPPFLAGS: '-DVERIFY' }
           - env_vars: { BUILD: 'distcheck', WITH_VALGRIND: 'no', CTIMETESTS: 'no', BENCH: 'no' }
           - env_vars: { CPPFLAGS: '-DDETERMINISTIC' }
           - env_vars: { CFLAGS: '-O0', CTIMETESTS: 'no' }
@@ -118,6 +130,7 @@ jobs:
         uses: ./.github/actions/run-in-docker-action
         with:
           dockerfile: ./ci/linux-debian.Dockerfile
+          scope: ${{ runner.arch }}-${{ needs.docker_cache.outputs.cache_scope }}
           command: ./ci/ci.sh
 
       - &PRINT_LOGS
@@ -145,6 +158,9 @@ jobs:
       RECOVERY: 'yes'
       EXTRAKEYS: 'yes'
       SCHNORRSIG: 'yes'
+      EXPERIMENTAL: 'yes'
+      SCHNORRSIG_HALFAGG: 'yes'
+      SCHNORRSIG_FULLAGG: 'yes'
       MUSIG: 'yes'
       ELLSWIFT: 'yes'
       BATCH: 'yes'
@@ -174,6 +190,9 @@ jobs:
       RECOVERY: 'yes'
       EXTRAKEYS: 'yes'
       SCHNORRSIG: 'yes'
+      EXPERIMENTAL: 'yes'
+      SCHNORRSIG_HALFAGG: 'yes'
+      SCHNORRSIG_FULLAGG: 'yes'
       MUSIG: 'yes'
       ELLSWIFT: 'yes'
       BATCH: 'yes'
@@ -205,6 +224,9 @@ jobs:
       RECOVERY: 'yes'
       EXTRAKEYS: 'yes'
       SCHNORRSIG: 'yes'
+      EXPERIMENTAL: 'yes'
+      SCHNORRSIG_HALFAGG: 'yes'
+      SCHNORRSIG_FULLAGG: 'yes'
       MUSIG: 'yes'
       ELLSWIFT: 'yes'
       BATCH: 'yes'
@@ -227,6 +249,9 @@ jobs:
       RECOVERY: 'yes'
       EXTRAKEYS: 'yes'
       SCHNORRSIG: 'yes'
+      EXPERIMENTAL: 'yes'
+      SCHNORRSIG_HALFAGG: 'yes'
+      SCHNORRSIG_FULLAGG: 'yes'
       MUSIG: 'yes'
       ELLSWIFT: 'yes'
       BATCH: 'yes'
@@ -268,6 +293,9 @@ jobs:
       RECOVERY: 'yes'
       EXTRAKEYS: 'yes'
       SCHNORRSIG: 'yes'
+      EXPERIMENTAL: 'yes'
+      SCHNORRSIG_HALFAGG: 'yes'
+      SCHNORRSIG_FULLAGG: 'yes'
       MUSIG: 'yes'
       ELLSWIFT: 'yes'
       BATCH: 'yes'
@@ -314,6 +342,9 @@ jobs:
       RECOVERY: 'yes'
       EXTRAKEYS: 'yes'
       SCHNORRSIG: 'yes'
+      EXPERIMENTAL: 'yes'
+      SCHNORRSIG_HALFAGG: 'yes'
+      SCHNORRSIG_FULLAGG: 'yes'
       MUSIG: 'yes'
       ELLSWIFT: 'yes'
       BATCH: 'yes'
@@ -344,6 +375,9 @@ jobs:
       RECOVERY: 'yes'
       EXTRAKEYS: 'yes'
       SCHNORRSIG: 'yes'
+      EXPERIMENTAL: 'yes'
+      SCHNORRSIG_HALFAGG: 'yes'
+      SCHNORRSIG_FULLAGG: 'yes'
       MUSIG: 'yes'
       ELLSWIFT: 'yes'
       BATCH: 'yes'
@@ -391,6 +425,9 @@ jobs:
       RECOVERY: 'yes'
       EXTRAKEYS: 'yes'
       SCHNORRSIG: 'yes'
+      EXPERIMENTAL: 'yes'
+      SCHNORRSIG_HALFAGG: 'yes'
+      SCHNORRSIG_FULLAGG: 'yes'
       MUSIG: 'yes'
       ELLSWIFT: 'yes'
       BATCH: 'yes'
@@ -418,6 +455,9 @@ jobs:
       RECOVERY: 'yes'
       EXTRAKEYS: 'yes'
       SCHNORRSIG: 'yes'
+      EXPERIMENTAL: 'yes'
+      SCHNORRSIG_HALFAGG: 'yes'
+      SCHNORRSIG_FULLAGG: 'yes'
       MUSIG: 'yes'
       ELLSWIFT: 'yes'
       BATCH: 'yes'
@@ -453,15 +493,15 @@ jobs:
       fail-fast: false
       matrix:
         env_vars:
-          - { WIDEMUL: 'int64',  RECOVERY: 'yes', ECDH: 'yes', EXTRAKEYS: 'yes', SCHNORRSIG: 'yes', MUSIG: 'yes', ELLSWIFT: 'yes', BATCH: 'yes' }
+          - { WIDEMUL: 'int64',  RECOVERY: 'yes', ECDH: 'yes', EXTRAKEYS: 'yes', SCHNORRSIG: 'yes', MUSIG: 'yes', ELLSWIFT: 'yes', BATCH: 'yes', EXPERIMENTAL: 'yes', SCHNORRSIG_HALFAGG: 'yes', SCHNORRSIG_FULLAGG: 'yes' }
           - { WIDEMUL: 'int128_struct', ECMULTGENKB: 2, ECMULTWINDOW: 4 }
-          - { WIDEMUL: 'int128',                  ECDH: 'yes', EXTRAKEYS: 'yes', SCHNORRSIG: 'yes', MUSIG: 'yes', ELLSWIFT: 'yes', BATCH: 'yes' }
+          - { WIDEMUL: 'int128',                  ECDH: 'yes', EXTRAKEYS: 'yes', SCHNORRSIG: 'yes', MUSIG: 'yes', ELLSWIFT: 'yes', BATCH: 'yes', EXPERIMENTAL: 'yes', SCHNORRSIG_HALFAGG: 'yes', SCHNORRSIG_FULLAGG: 'yes' }
           - { WIDEMUL: 'int128', RECOVERY: 'yes' }
-          - { WIDEMUL: 'int128', RECOVERY: 'yes', ECDH: 'yes', EXTRAKEYS: 'yes', SCHNORRSIG: 'yes', MUSIG: 'yes', ELLSWIFT: 'yes', BATCH: 'yes' }
-          - { WIDEMUL: 'int128', RECOVERY: 'yes', ECDH: 'yes', EXTRAKEYS: 'yes', SCHNORRSIG: 'yes', MUSIG: 'yes', ELLSWIFT: 'yes', BATCH: 'yes', CC: 'gcc' }
-          - { WIDEMUL: 'int128', RECOVERY: 'yes', ECDH: 'yes', EXTRAKEYS: 'yes', SCHNORRSIG: 'yes', MUSIG: 'yes', ELLSWIFT: 'yes', BATCH: 'yes',            WRAPPER_CMD: 'valgrind --error-exitcode=42', SECP256K1_TEST_ITERS: 2 }
-          - { WIDEMUL: 'int128', RECOVERY: 'yes', ECDH: 'yes', EXTRAKEYS: 'yes', SCHNORRSIG: 'yes', MUSIG: 'yes', ELLSWIFT: 'yes', BATCH: 'yes', CC: 'gcc', WRAPPER_CMD: 'valgrind --error-exitcode=42', SECP256K1_TEST_ITERS: 2 }
-          - { WIDEMUL: 'int128', RECOVERY: 'yes', ECDH: 'yes', EXTRAKEYS: 'yes', SCHNORRSIG: 'yes', MUSIG: 'yes', ELLSWIFT: 'yes', BATCH: 'yes', CPPFLAGS: '-DVERIFY', CTIMETESTS: 'no' }
+          - { WIDEMUL: 'int128', RECOVERY: 'yes', ECDH: 'yes', EXTRAKEYS: 'yes', SCHNORRSIG: 'yes', MUSIG: 'yes', ELLSWIFT: 'yes', BATCH: 'yes', EXPERIMENTAL: 'yes', SCHNORRSIG_HALFAGG: 'yes', SCHNORRSIG_FULLAGG: 'yes' }
+          - { WIDEMUL: 'int128', RECOVERY: 'yes', ECDH: 'yes', EXTRAKEYS: 'yes', SCHNORRSIG: 'yes', MUSIG: 'yes', ELLSWIFT: 'yes', BATCH: 'yes', EXPERIMENTAL: 'yes', SCHNORRSIG_HALFAGG: 'yes', SCHNORRSIG_FULLAGG: 'yes', CC: 'gcc' }
+          - { WIDEMUL: 'int128', RECOVERY: 'yes', ECDH: 'yes', EXTRAKEYS: 'yes', SCHNORRSIG: 'yes', MUSIG: 'yes', ELLSWIFT: 'yes', BATCH: 'yes', EXPERIMENTAL: 'yes', SCHNORRSIG_HALFAGG: 'yes', SCHNORRSIG_FULLAGG: 'yes',            WRAPPER_CMD: 'valgrind --error-exitcode=42', SECP256K1_TEST_ITERS: 2 }
+          - { WIDEMUL: 'int128', RECOVERY: 'yes', ECDH: 'yes', EXTRAKEYS: 'yes', SCHNORRSIG: 'yes', MUSIG: 'yes', ELLSWIFT: 'yes', BATCH: 'yes', EXPERIMENTAL: 'yes', SCHNORRSIG_HALFAGG: 'yes', SCHNORRSIG_FULLAGG: 'yes', CC: 'gcc', WRAPPER_CMD: 'valgrind --error-exitcode=42', SECP256K1_TEST_ITERS: 2 }
+          - { WIDEMUL: 'int128', RECOVERY: 'yes', ECDH: 'yes', EXTRAKEYS: 'yes', SCHNORRSIG: 'yes', MUSIG: 'yes', ELLSWIFT: 'yes', BATCH: 'yes', EXPERIMENTAL: 'yes', SCHNORRSIG_HALFAGG: 'yes', SCHNORRSIG_FULLAGG: 'yes', CPPFLAGS: '-DVERIFY', CTIMETESTS: 'no' }
           - BUILD: 'distcheck'
 
     steps:
@@ -510,13 +550,13 @@ jobs:
       fail-fast: false
       matrix:
         env_vars:
-          - { WIDEMUL: 'int64',  RECOVERY: 'yes', ECDH: 'yes', EXTRAKEYS: 'yes', SCHNORRSIG: 'yes', MUSIG: 'yes', ELLSWIFT: 'yes' }
+          - { WIDEMUL: 'int64',  RECOVERY: 'yes', ECDH: 'yes', EXTRAKEYS: 'yes', SCHNORRSIG: 'yes', MUSIG: 'yes', ELLSWIFT: 'yes', EXPERIMENTAL: 'yes', SCHNORRSIG_HALFAGG: 'yes', SCHNORRSIG_FULLAGG: 'yes' }
           - { WIDEMUL: 'int128_struct', ECMULTGENPRECISION: 2, ECMULTWINDOW: 4 }
-          - { WIDEMUL: 'int128',                  ECDH: 'yes', EXTRAKEYS: 'yes', SCHNORRSIG: 'yes', MUSIG: 'yes', ELLSWIFT: 'yes' }
+          - { WIDEMUL: 'int128',                  ECDH: 'yes', EXTRAKEYS: 'yes', SCHNORRSIG: 'yes', MUSIG: 'yes', ELLSWIFT: 'yes', EXPERIMENTAL: 'yes', SCHNORRSIG_HALFAGG: 'yes', SCHNORRSIG_FULLAGG: 'yes' }
           - { WIDEMUL: 'int128', RECOVERY: 'yes' }
-          - { WIDEMUL: 'int128', RECOVERY: 'yes', ECDH: 'yes', EXTRAKEYS: 'yes', SCHNORRSIG: 'yes', MUSIG: 'yes', ELLSWIFT: 'yes' }
-          - { WIDEMUL: 'int128', RECOVERY: 'yes', ECDH: 'yes', EXTRAKEYS: 'yes', SCHNORRSIG: 'yes', MUSIG: 'yes', ELLSWIFT: 'yes', CC: 'gcc' }
-          - { WIDEMUL: 'int128', RECOVERY: 'yes', ECDH: 'yes', EXTRAKEYS: 'yes', SCHNORRSIG: 'yes', MUSIG: 'yes', ELLSWIFT: 'yes', CPPFLAGS: '-DVERIFY' }
+          - { WIDEMUL: 'int128', RECOVERY: 'yes', ECDH: 'yes', EXTRAKEYS: 'yes', SCHNORRSIG: 'yes', MUSIG: 'yes', ELLSWIFT: 'yes', EXPERIMENTAL: 'yes', SCHNORRSIG_HALFAGG: 'yes', SCHNORRSIG_FULLAGG: 'yes' }
+          - { WIDEMUL: 'int128', RECOVERY: 'yes', ECDH: 'yes', EXTRAKEYS: 'yes', SCHNORRSIG: 'yes', MUSIG: 'yes', ELLSWIFT: 'yes', CC: 'gcc', EXPERIMENTAL: 'yes', SCHNORRSIG_HALFAGG: 'yes', SCHNORRSIG_FULLAGG: 'yes' }
+          - { WIDEMUL: 'int128', RECOVERY: 'yes', ECDH: 'yes', EXTRAKEYS: 'yes', SCHNORRSIG: 'yes', MUSIG: 'yes', ELLSWIFT: 'yes', CPPFLAGS: '-DVERIFY', EXPERIMENTAL: 'yes', SCHNORRSIG_HALFAGG: 'yes', SCHNORRSIG_FULLAGG: 'yes' }
           - BUILD: 'distcheck'
 
     steps:
@@ -627,6 +667,9 @@ jobs:
       RECOVERY: 'yes'
       EXTRAKEYS: 'yes'
       SCHNORRSIG: 'yes'
+      EXPERIMENTAL: 'yes'
+      SCHNORRSIG_HALFAGG: 'yes'
+      SCHNORRSIG_FULLAGG: 'yes'
       MUSIG: 'yes'
       ELLSWIFT: 'yes'
       BATCH: 'yes'
@@ -648,6 +691,7 @@ jobs:
         uses: ./.github/actions/run-in-docker-action
         with:
           dockerfile: ./ci/linux-debian.Dockerfile
+          scope: ${{ runner.arch }}-${{ needs.docker_cache.outputs.cache_scope }}
           command: |
             g++ -Werror include/*.h
             clang -Werror -x c++-header include/*.h

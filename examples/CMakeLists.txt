@@ -33,3 +33,7 @@ endif()
 if(SECP256K1_ENABLE_MODULE_BATCH AND SECP256K1_ENABLE_MODULE_SCHNORRSIG)
   add_example(batch)
 endif()
+
+if(SECP256K1_ENABLE_MODULE_SCHNORRSIG_FULLAGG)
+  add_example(fullagg)
+endif()

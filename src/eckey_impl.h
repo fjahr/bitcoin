@@ -35,24 +35,49 @@ static int secp256k1_eckey_pubkey_parse(secp256k1_ge *elem, const unsigned char 
     }
 }
 
-static int secp256k1_eckey_pubkey_serialize(secp256k1_ge *elem, unsigned char *pub, size_t *size, int compressed) {
-    VERIFY_CHECK(compressed == 0 || compressed == 1);
+static void secp256k1_eckey_pubkey_serialize33(secp256k1_ge *elem, unsigned char *pub33) {
+    VERIFY_CHECK(!secp256k1_ge_is_infinity(elem));
 
-    if (secp256k1_ge_is_infinity(elem)) {
-        return 0;
-    }
     secp256k1_fe_normalize_var(&elem->x);
     secp256k1_fe_normalize_var(&elem->y);
-    secp256k1_fe_get_b32(&pub[1], &elem->x);
-    if (compressed) {
-        *size = 33;
-        pub[0] = secp256k1_fe_is_odd(&elem->y) ? SECP256K1_TAG_PUBKEY_ODD : SECP256K1_TAG_PUBKEY_EVEN;
+    pub33[0] = secp256k1_fe_is_odd(&elem->y) ? SECP256K1_TAG_PUBKEY_ODD : SECP256K1_TAG_PUBKEY_EVEN;
+    secp256k1_fe_get_b32(&pub33[1], &elem->x);
+}
+
+static void secp256k1_eckey_pubkey_serialize65(secp256k1_ge *elem, unsigned char *pub65) {
+    VERIFY_CHECK(!secp256k1_ge_is_infinity(elem));
+
+    secp256k1_fe_normalize_var(&elem->x);
+    secp256k1_fe_normalize_var(&elem->y);
+    pub65[0] = SECP256K1_TAG_PUBKEY_UNCOMPRESSED;
+    secp256k1_fe_get_b32(&pub65[1], &elem->x);
+    secp256k1_fe_get_b32(&pub65[33], &elem->y);
+}
+
+/* Outputs 33 zero bytes if the given group element is the point at infinity,
+ * otherwise outputs the compressed serialization */
+static void secp256k1_eckey_serialize_ext(unsigned char *out33, secp256k1_ge* ge) {
+    if (secp256k1_ge_is_infinity(ge)) {
+        memset(out33, 0, 33);
     } else {
-        *size = 65;
-        pub[0] = SECP256K1_TAG_PUBKEY_UNCOMPRESSED;
-        secp256k1_fe_get_b32(&pub[33], &elem->y);
+        /* Serialize must succeed because the point is not at infinity */
+        secp256k1_eckey_pubkey_serialize33(ge, out33);
     }
-    return 1;
+}
+
+/* Outputs the point at infinity if the given byte array is all zero,
+ * otherwise attempts to parse compressed point serialization */
+static int secp256k1_eckey_parse_ext(secp256k1_ge* ge, const unsigned char *in33) {
+    unsigned char zeros[33] = { 0 };
+
+    if (secp256k1_memcmp_var(in33, zeros, sizeof(zeros)) == 0) {
+        secp256k1_ge_set_infinity(ge);
+        return 1;
+    }
+    if (!secp256k1_eckey_pubkey_parse(ge, in33, 33)) {
+        return 0;
+    }
+    return secp256k1_ge_is_in_correct_subgroup(ge);
 }
 
 static int secp256k1_eckey_privkey_tweak_add(secp256k1_scalar *key, const secp256k1_scalar *tweak) {
