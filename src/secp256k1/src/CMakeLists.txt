@@ -17,6 +17,18 @@ if(SECP256K1_ENABLE_MODULE_ELLSWIFT)
   set_property(TARGET secp256k1 APPEND PROPERTY PUBLIC_HEADER ${PROJECT_SOURCE_DIR}/include/secp256k1_ellswift.h)
 endif()
 
+if(SECP256K1_ENABLE_MODULE_SCHNORRSIG_HALFAGG)
+  if(NOT SECP256K1_EXPERIMENTAL)
+    message(FATAL_ERROR "Schnorrsig half-aggregation is experimental. Use -DSECP256K1_EXPERIMENTAL=ON to allow.")
+  endif()
+  if(DEFINED SECP256K1_ENABLE_MODULE_SCHNORRSIG AND NOT SECP256K1_ENABLE_MODULE_SCHNORRSIG)
+    message(FATAL_ERROR "Module dependency error: You have disabled the schnorrsig module explicitly, but it is required by the Schnorrsig half-aggregation module.")
+  endif()
+  set(SECP256K1_ENABLE_MODULE_SCHNORRSIG ON)
+  add_compile_definitions(ENABLE_MODULE_SCHNORRSIG_HALFAGG=1)
+  set_property(TARGET secp256k1 APPEND PROPERTY PUBLIC_HEADER ${PROJECT_SOURCE_DIR}/include/secp256k1_schnorrsig_halfagg.h)
+endif()
+
 if(SECP256K1_ENABLE_MODULE_MUSIG)
   if(DEFINED SECP256K1_ENABLE_MODULE_SCHNORRSIG AND NOT SECP256K1_ENABLE_MODULE_SCHNORRSIG)
     message(FATAL_ERROR "Module dependency error: You have disabled the schnorrsig module explicitly, but it is required by the musig module.")
@@ -24,6 +36,19 @@ if(SECP256K1_ENABLE_MODULE_MUSIG)
   set(SECP256K1_ENABLE_MODULE_SCHNORRSIG ON)
   add_compile_definitions(ENABLE_MODULE_MUSIG=1)
   set_property(TARGET secp256k1 APPEND PROPERTY PUBLIC_HEADER ${PROJECT_SOURCE_DIR}/include/secp256k1_musig.h)
+endif()
+
+option(SECP256K1_EXPERIMENTAL "Allow experimental configuration options." OFF)
+if(SECP256K1_ENABLE_MODULE_SCHNORRSIG_FULLAGG)
+  if(NOT SECP256K1_EXPERIMENTAL)
+    message(FATAL_ERROR "Schnorrsig full-aggregation is experimental. Use -DSECP256K1_EXPERIMENTAL=ON to allow.")
+  endif()
+  if(DEFINED SECP256K1_ENABLE_MODULE_SCHNORRSIG AND NOT SECP256K1_ENABLE_MODULE_SCHNORRSIG)
+    message(FATAL_ERROR "Module dependency error: You have disabled the schnorrsig module explicitly, but it is required by the Schnorrsig full-aggregation module.")
+  endif()
+  set(SECP256K1_ENABLE_MODULE_SCHNORRSIG ON)
+  add_compile_definitions(ENABLE_MODULE_SCHNORRSIG_FULLAGG=1)
+  set_property(TARGET secp256k1 APPEND PROPERTY PUBLIC_HEADER ${PROJECT_SOURCE_DIR}/include/secp256k1_schnorrsig_fullagg.h)
 endif()
 
 if(SECP256K1_ENABLE_MODULE_SCHNORRSIG)
@@ -106,7 +131,7 @@ set_target_properties(secp256k1_objs PROPERTIES
 )
 
 # This emulates Libtool to make sure Libtool and CMake agree on the ABI version,
-# see below "Calculate the version variables" in build-aux/ltmain.sh.
+# see below "Calculate the version variables" in autotools-aux/ltmain.sh.
 math(EXPR ${PROJECT_NAME}_soversion "${${PROJECT_NAME}_LIB_VERSION_CURRENT} - ${${PROJECT_NAME}_LIB_VERSION_AGE}")
 set_target_properties(secp256k1 PROPERTIES
   SOVERSION ${${PROJECT_NAME}_soversion}

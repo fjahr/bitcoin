@@ -7,7 +7,7 @@ project(libsecp256k1
   # The package (a.k.a. release) version is based on semantic versioning 2.0.0 of
   # the API. All changes in experimental modules are treated as
   # backwards-compatible and therefore at most increase the minor version.
-  VERSION 0.7.1
+  VERSION 0.7.2
   DESCRIPTION "Optimized C library for ECDSA signatures and secret/public key operations on curve secp256k1."
   HOMEPAGE_URL "https://github.com/bitcoin-core/secp256k1"
   LANGUAGES C
@@ -22,7 +22,7 @@ list(APPEND CMAKE_MODULE_PATH ${PROJECT_SOURCE_DIR}/cmake)
 # All changes in experimental modules are treated as if they don't affect the
 # interface and therefore only increase the revision.
 set(${PROJECT_NAME}_LIB_VERSION_CURRENT 6)
-set(${PROJECT_NAME}_LIB_VERSION_REVISION 1)
+set(${PROJECT_NAME}_LIB_VERSION_REVISION 2)
 set(${PROJECT_NAME}_LIB_VERSION_AGE 0)
 
 #=============================
@@ -50,7 +50,9 @@ option(SECP256K1_ENABLE_MODULE_ECDH "Enable ECDH module." ON)
 option(SECP256K1_ENABLE_MODULE_RECOVERY "Enable ECDSA pubkey recovery module." OFF)
 option(SECP256K1_ENABLE_MODULE_EXTRAKEYS "Enable extrakeys module." ON)
 option(SECP256K1_ENABLE_MODULE_SCHNORRSIG "Enable schnorrsig module." ON)
+option(SECP256K1_ENABLE_MODULE_SCHNORRSIG_HALFAGG "Enable schnorrsig half-aggregation module." OFF)
 option(SECP256K1_ENABLE_MODULE_MUSIG "Enable musig module." ON)
+option(SECP256K1_ENABLE_MODULE_SCHNORRSIG_FULLAGG "Enable schnorrsig full-aggregation module." OFF)
 option(SECP256K1_ENABLE_MODULE_ELLSWIFT "Enable ElligatorSwift module." ON)
 option(SECP256K1_ENABLE_MODULE_BATCH "Enable batch module." ON)
 
@@ -113,7 +115,6 @@ elseif(SECP256K1_ASM)
   endif()
 endif()
 
-option(SECP256K1_EXPERIMENTAL "Allow experimental configuration options." OFF)
 if(NOT SECP256K1_EXPERIMENTAL)
   if(SECP256K1_ASM STREQUAL "arm32")
     message(FATAL_ERROR "ARM32 assembly is experimental. Use -DSECP256K1_EXPERIMENTAL=ON to allow.")
@@ -218,6 +219,7 @@ else()
   try_append_c_flags(-Wcast-align=strict) # GCC >= 8.0.
   try_append_c_flags(-Wconditional-uninitialized) # Clang >= 3.0 only.
   try_append_c_flags(-Wextra) # GCC >= 3.4, this is the newer name of -W, which we don't use because older GCCs will warn about unused functions.
+  try_append_c_flags(-Wleading-whitespace=spaces) # GCC >= 15.0
   try_append_c_flags(-Wnested-externs)
   try_append_c_flags(-Wno-long-long) # GCC >= 3.0, -Wlong-long is implied by -pedantic.
   try_append_c_flags(-Wno-overlength-strings) # GCC >= 4.2, -Woverlength-strings is implied by -pedantic.
@@ -225,6 +227,7 @@ else()
   try_append_c_flags(-Wreserved-identifier) # Clang >= 13.0 only.
   try_append_c_flags(-Wshadow)
   try_append_c_flags(-Wstrict-prototypes)
+  try_append_c_flags(-Wtrailing-whitespace=any) # GCC >= 15.0
   try_append_c_flags(-Wundef)
 endif()
 
@@ -284,7 +287,9 @@ message("  ECDH ................................ ${SECP256K1_ENABLE_MODULE_ECDH}
 message("  ECDSA pubkey recovery ............... ${SECP256K1_ENABLE_MODULE_RECOVERY}")
 message("  extrakeys ........................... ${SECP256K1_ENABLE_MODULE_EXTRAKEYS}")
 message("  schnorrsig .......................... ${SECP256K1_ENABLE_MODULE_SCHNORRSIG}")
+message("  schnorrsig halfagg .................. ${SECP256K1_ENABLE_MODULE_SCHNORRSIG_HALFAGG}")
 message("  musig ............................... ${SECP256K1_ENABLE_MODULE_MUSIG}")
+message("  schnorrsig fullagg .................. ${SECP256K1_ENABLE_MODULE_SCHNORRSIG_FULLAGG}")
 message("  ElligatorSwift ...................... ${SECP256K1_ENABLE_MODULE_ELLSWIFT}")
 message("  batch ............................... ${SECP256K1_ENABLE_MODULE_BATCH}")
 message("Parameters:")
