@@ -121,6 +121,14 @@ std::string ScriptErrorString(const ScriptError serror)
             return "Script number overflowed or is non-minimally encoded";
         case SCRIPT_ERR_BATCH_VALIDATION_FAILED:
             return "Schnorr batch validation failed";
+        case SCRIPT_ERR_WITNESS_V2_PROGRAM_MISMATCH:
+            return "Witness v2 program mismatch";
+        case SCRIPT_ERR_WITNESS_V2_INVALID_SIGHASH:
+            return "Witness v2 invalid sighash type";
+        case SCRIPT_ERR_WITNESS_V2_INVALID_MARKER:
+            return "Witness v2 invalid aggregation marker or element size";
+        case SCRIPT_ERR_WITNESS_V2_OPTOUT_VERIFY:
+            return "Witness v2 opt-out signature verification failed";
         case SCRIPT_ERR_UNKNOWN_ERROR:
         case SCRIPT_ERR_ERROR_COUNT:
         default: break;

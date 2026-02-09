@@ -1918,6 +1918,19 @@ static bool VerifyTaprootCommitment(const std::vector<unsigned char>& control, c
     return q.CheckTapTweak(p, merkle_root, control[0] & 1);
 }
 
+/** Check whether a sighash type byte is valid for witness v2 (CISA).
+ * Same valid set as BIP341. */
+static bool IsValidCISASighashType(uint8_t sighash_type)
+{
+    return sighash_type <= 0x03 || (sighash_type >= 0x81 && sighash_type <= 0x83);
+}
+
+/** Check whether a byte is a valid CISA marker. */
+static bool IsCISAMarker(uint8_t b)
+{
+    return b == CISA_MARKER_OPTOUT || b == CISA_MARKER_HALFAGG || b == CISA_MARKER_FULLAGG;
+}
+
 static bool VerifyWitnessProgram(const CScriptWitness& witness, int witversion, const std::vector<unsigned char>& program, script_verify_flags flags, const BaseSignatureChecker& checker, ScriptError* serror, bool is_p2sh)
 {
     CScript exec_script; //!< Actually executed script (last stack item in P2WSH; implied P2PKH script in P2WPKH; leaf script in P2TR)
@@ -1991,6 +2004,136 @@ static bool VerifyWitnessProgram(const CScriptWitness& witness, int witversion, 
             }
             return set_success(serror);
         }
+    } else if (witversion == 2 && program.size() == WITNESS_V2_CISA_SIZE && !is_p2sh) {
+        // BIP-CISA: Witness v2 keypath spending rules
+        if (!(flags & SCRIPT_VERIFY_WITNESS_V2)) return set_success(serror);
+
+        auto stack_copy = witness.stack;
+        std::span<const valtype> stack{stack_copy};
+
+        if (stack.empty()) {
+            return set_error(serror, SCRIPT_ERR_WITNESS_PROGRAM_WITNESS_EMPTY);
+        }
+
+        // Handle annex (same rule as BIP341: if >= 2 elements and last starts with 0x50)
+        bool has_annex = stack.size() >= 2 && !stack.back().empty() && stack.back()[0] == ANNEX_TAG;
+
+        ScriptExecutionData execdata;
+        if (has_annex) {
+            execdata.m_annex_present = true;
+            execdata.m_annex_init = true;
+            HashWriter hw(HASHER_TAPSIGHASH);
+            hw << witness.stack.back();
+            execdata.m_annex_hash = hw.GetSHA256();
+            SpanPopBack(stack);
+        }
+
+        // After annex removal, witness must have exactly one element.
+        if (stack.size() != 1) {
+            return set_error(serror, SCRIPT_ERR_WITNESS_V2_PROGRAM_MISMATCH);
+        }
+
+        const valtype& elem = stack.front();
+        if (elem.empty() || !IsCISAMarker(elem[0])) {
+            return set_error(serror, SCRIPT_ERR_WITNESS_V2_PROGRAM_MISMATCH);
+        }
+
+        uint8_t marker = elem[0];
+
+        if (marker == CISA_MARKER_OPTOUT) {
+            // Opt-out input: must carry a BIP340 signature.
+            // 65 bytes: [0xbb || 64-byte sig]           → SIGHASH_DEFAULT
+            // 66 bytes: [0xbb || sighash || 64-byte sig] → explicit sighash
+            if (elem.size() != 65 && elem.size() != 66) {
+                return set_error(serror, SCRIPT_ERR_WITNESS_V2_INVALID_MARKER);
+            }
+
+            uint8_t sighash_type = 0x00; // SIGHASH_DEFAULT
+            std::span<const unsigned char> sig64;
+
+            if (elem.size() == 65) {
+                sig64 = std::span{elem}.subspan(1, 64);
+            } else {
+                sighash_type = elem[1];
+                if (!IsValidCISASighashType(sighash_type)) {
+                    return set_error(serror, SCRIPT_ERR_WITNESS_V2_INVALID_SIGHASH);
+                }
+                sig64 = std::span{elem}.subspan(2, 64);
+            }
+
+            // Reconstruct a BIP341-compatible signature for CheckSchnorrSignature:
+            // 64 bytes for DEFAULT, 65 bytes (sig || sighash_byte) for explicit.
+            std::vector<unsigned char> compat_sig(sig64.begin(), sig64.end());
+            if (sighash_type != 0x00) {
+                compat_sig.push_back(sighash_type);
+            }
+
+            return checker.CheckSchnorrSignature(compat_sig, XOnlyPubKey{program}, SigVersion::TAPROOT, execdata, serror);
+
+        } else if (marker == CISA_MARKER_HALFAGG || marker == CISA_MARKER_FULLAGG) {
+            // Aggregated input: placeholder or final (carrying aggregate signature).
+            // Structural validation only; cryptographic verification is deferred
+            // to the transaction-level VerifyCISATransaction() in a later step.
+
+            if (elem.size() == 1) {
+                // [marker] — placeholder, SIGHASH_DEFAULT. Valid.
+                return set_success(serror);
+            }
+
+            if (elem.size() == 2) {
+                // [marker || sighash] — placeholder, explicit sighash.
+                if (!IsValidCISASighashType(elem[1])) {
+                    return set_error(serror, SCRIPT_ERR_WITNESS_V2_INVALID_SIGHASH);
+                }
+                return set_success(serror);
+            }
+
+            // elem.size() > 2: final aggregated input carrying the aggregate signature.
+            // Determine whether a sighash byte is present.
+            //
+            // For full-agg (0xbd): signature is always 64 bytes.
+            //   65 bytes total: [marker || 64-byte sig]          → no sighash
+            //   66 bytes total: [marker || sighash || 64-byte sig] → has sighash
+            //
+            // For half-agg (0xbc): signature is (n+1)*32 bytes (>= 64).
+            //   (n+1)*32 + 1 total: [marker || sig]              → no sighash
+            //   (n+1)*32 + 2 total: [marker || sighash || sig]   → has sighash
+            //   i.e., (size - 1) % 32 == 0 means no sighash,
+            //         (size - 2) % 32 == 0 means has sighash.
+
+            if (marker == CISA_MARKER_FULLAGG) {
+                if (elem.size() != 65 && elem.size() != 66) {
+                    return set_error(serror, SCRIPT_ERR_WITNESS_V2_INVALID_MARKER);
+                }
+                if (elem.size() == 66 && !IsValidCISASighashType(elem[1])) {
+                    return set_error(serror, SCRIPT_ERR_WITNESS_V2_INVALID_SIGHASH);
+                }
+                return set_success(serror);
+            }
+
+            // marker == CISA_MARKER_HALFAGG
+            // Minimum aggregate sig is 64 bytes (n=1), so minimum element is 65 bytes.
+            size_t payload = elem.size() - 1; // bytes after marker
+            bool has_sighash;
+
+            if (payload >= 64 && payload % 32 == 0) {
+                has_sighash = false;
+            } else if (payload >= 65 && (payload - 1) % 32 == 0) {
+                has_sighash = true;
+            } else {
+                return set_error(serror, SCRIPT_ERR_WITNESS_V2_INVALID_MARKER);
+            }
+
+            if (has_sighash && !IsValidCISASighashType(elem[1])) {
+                return set_error(serror, SCRIPT_ERR_WITNESS_V2_INVALID_SIGHASH);
+            }
+
+            // Exact aggsig size vs number of group members validated at tx level.
+            return set_success(serror);
+        }
+
+        // Should be unreachable (IsCISAMarker check above), but be safe.
+        return set_error(serror, SCRIPT_ERR_WITNESS_V2_PROGRAM_MISMATCH);
     } else if (!is_p2sh && CScript::IsPayToAnchor(witversion, program)) {
         return true;
     } else {

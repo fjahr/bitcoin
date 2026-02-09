@@ -240,6 +240,12 @@ struct ScriptExecutionData
 static constexpr size_t WITNESS_V0_SCRIPTHASH_SIZE = 32;
 static constexpr size_t WITNESS_V0_KEYHASH_SIZE = 20;
 static constexpr size_t WITNESS_V1_TAPROOT_SIZE = 32;
+static constexpr size_t WITNESS_V2_CISA_SIZE = 32;
+
+/** CISA aggregation marker bytes */
+static constexpr uint8_t CISA_MARKER_OPTOUT  = 0xbb;
+static constexpr uint8_t CISA_MARKER_HALFAGG = 0xbc;
+static constexpr uint8_t CISA_MARKER_FULLAGG = 0xbd;
 
 static constexpr uint8_t TAPROOT_LEAF_MASK = 0xfe;
 static constexpr uint8_t TAPROOT_LEAF_TAPSCRIPT = 0xc0;
