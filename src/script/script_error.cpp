@@ -129,6 +129,10 @@ std::string ScriptErrorString(const ScriptError serror)
             return "Witness v2 invalid aggregation marker or element size";
         case SCRIPT_ERR_WITNESS_V2_OPTOUT_VERIFY:
             return "Witness v2 opt-out signature verification failed";
+        case SCRIPT_ERR_CISA_GROUP_INVALID:
+            return "CISA aggregation group structure invalid";
+        case SCRIPT_ERR_CISA_VERIFY_FAILED:
+            return "CISA aggregate signature verification failed";
         case SCRIPT_ERR_UNKNOWN_ERROR:
         case SCRIPT_ERR_ERROR_COUNT:
         default: break;

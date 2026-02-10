@@ -304,6 +304,24 @@ public:
     SERIALIZE_METHODS(XOnlyPubKey, obj) { READWRITE(obj.m_keydata); }
 };
 
+/** Verify a half-aggregate BIP340 Schnorr signature.
+ * pubkeys: array of x-only public keys (one per aggregated input)
+ * msgs:    array of 32-byte sighash messages (one per aggregated input)
+ * aggsig:  serialized half-aggregate signature, (n+1)*32 bytes */
+bool VerifyHalfAggSchnorr(
+    const std::vector<XOnlyPubKey>& pubkeys,
+    const std::vector<uint256>& msgs,
+    std::span<const unsigned char> aggsig);
+
+/** Verify a full-aggregate (DahLIAS) Schnorr signature.
+ * pubkeys: array of x-only public keys (one per aggregated input)
+ * msgs:    array of 32-byte sighash messages (one per aggregated input)
+ * sig64:   64-byte aggregate signature */
+bool VerifyFullAggSchnorr(
+    const std::vector<XOnlyPubKey>& pubkeys,
+    const std::vector<uint256>& msgs,
+    std::span<const unsigned char> sig64);
+
 /** An ElligatorSwift-encoded public key. */
 struct EllSwiftPubKey
 {

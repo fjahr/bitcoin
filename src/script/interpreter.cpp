@@ -2267,6 +2267,221 @@ bool VerifyScript(const CScript& scriptSig, const CScript& scriptPubKey, const C
     return set_success(serror);
 }
 
+bool VerifyCISATransaction(
+    const CTransaction& tx,
+    const std::vector<CTxOut>& spent_outputs,
+    script_verify_flags flags,
+    const PrecomputedTransactionData& txdata,
+    ScriptError* serror)
+{
+    if (!(flags & SCRIPT_VERIFY_WITNESS_V2)) {
+        return set_success(serror);
+    }
+
+    // Per-input info collected during Pass 1
+    struct AggInputInfo {
+        uint32_t input_index;
+        uint8_t sighash_type;
+        XOnlyPubKey pubkey;
+        bool has_annex;
+        uint256 annex_hash;
+    };
+
+    std::vector<AggInputInfo> halfagg_inputs;
+    std::vector<AggInputInfo> fullagg_inputs;
+    std::vector<unsigned char> halfagg_sig;
+    std::vector<unsigned char> fullagg_sig;
+    bool halfagg_final_seen = false;
+    bool fullagg_final_seen = false;
+
+    // ================================================================
+    // Pass 1: Parse all v2 inputs, collect aggregation group info
+    // ================================================================
+    for (uint32_t i = 0; i < tx.vin.size(); i++) {
+        int witver;
+        std::vector<unsigned char> witprog;
+        if (!spent_outputs[i].scriptPubKey.IsWitnessProgram(witver, witprog)) continue;
+        if (witver != 2 || witprog.size() != WITNESS_V2_CISA_SIZE) continue;
+
+        const auto& witness = tx.vin[i].scriptWitness;
+        if (witness.stack.empty()) continue; // caught per-input
+
+        auto stack_copy = witness.stack;
+        std::span<const valtype> stack{stack_copy};
+
+        // Handle annex
+        bool has_annex = stack.size() >= 2 && !stack.back().empty() && stack.back()[0] == ANNEX_TAG;
+        uint256 annex_hash;
+        if (has_annex) {
+            HashWriter hw(HASHER_TAPSIGHASH);
+            hw << witness.stack.back();
+            annex_hash = hw.GetSHA256();
+            SpanPopBack(stack);
+        }
+
+        if (stack.size() != 1) continue; // caught per-input
+        const valtype& elem = stack.front();
+        if (elem.empty()) continue;
+
+        uint8_t marker = elem[0];
+
+        // Skip opt-out inputs — already verified per-input in Step 3
+        if (marker == CISA_MARKER_OPTOUT) continue;
+        // Skip non-CISA markers (shouldn't happen, caught per-input)
+        if (marker != CISA_MARKER_HALFAGG && marker != CISA_MARKER_FULLAGG) continue;
+
+        // Determine which group and check ordering
+        bool is_half = (marker == CISA_MARKER_HALFAGG);
+        bool& final_seen = is_half ? halfagg_final_seen : fullagg_final_seen;
+
+        // BIP rule: no markers after their group's final input
+        if (final_seen) {
+            return set_error(serror, SCRIPT_ERR_CISA_GROUP_INVALID);
+        }
+
+        // Parse sighash type and detect whether this is the final input
+        uint8_t sighash_type = 0x00;
+        bool has_signature = false;
+        const unsigned char* sig_begin = nullptr;
+        size_t sig_len = 0;
+
+        if (marker == CISA_MARKER_FULLAGG) {
+            if (elem.size() == 1) {
+                // [marker] — placeholder, DEFAULT
+            } else if (elem.size() == 2) {
+                // [marker || sighash] — placeholder
+                sighash_type = elem[1];
+            } else if (elem.size() == 65) {
+                // [marker || 64-byte sig] — final, DEFAULT
+                has_signature = true;
+                sig_begin = elem.data() + 1;
+                sig_len = 64;
+            } else if (elem.size() == 66) {
+                // [marker || sighash || 64-byte sig] — final, explicit
+                sighash_type = elem[1];
+                has_signature = true;
+                sig_begin = elem.data() + 2;
+                sig_len = 64;
+            }
+            // Other sizes were rejected per-input
+        } else {
+            // CISA_MARKER_HALFAGG
+            if (elem.size() == 1) {
+                // placeholder, DEFAULT
+            } else if (elem.size() == 2) {
+                // placeholder, explicit sighash
+                sighash_type = elem[1];
+            } else {
+                // Final input with half-aggregate signature
+                size_t payload = elem.size() - 1;
+                if (payload >= 64 && payload % 32 == 0) {
+                    // no sighash byte
+                    has_signature = true;
+                    sig_begin = elem.data() + 1;
+                    sig_len = payload;
+                } else if (payload >= 65 && (payload - 1) % 32 == 0) {
+                    // has sighash byte
+                    sighash_type = elem[1];
+                    has_signature = true;
+                    sig_begin = elem.data() + 2;
+                    sig_len = payload - 1;
+                }
+            }
+        }
+
+        auto& group = is_half ? halfagg_inputs : fullagg_inputs;
+        group.push_back({i, sighash_type, XOnlyPubKey{std::span<const unsigned char>(witprog)}, has_annex, annex_hash});
+
+        if (has_signature) {
+            auto& group_sig = is_half ? halfagg_sig : fullagg_sig;
+            group_sig.assign(sig_begin, sig_begin + sig_len);
+            final_seen = true;
+        }
+    }
+
+    // ================================================================
+    // Pass 2: Validate aggregation group structure
+    // ================================================================
+
+    // Half-agg group
+    if (!halfagg_inputs.empty()) {
+        if (!halfagg_final_seen) {
+            return set_error(serror, SCRIPT_ERR_CISA_GROUP_INVALID);
+        }
+        size_t n = halfagg_inputs.size();
+        if (halfagg_sig.size() != (n + 1) * 32) {
+            return set_error(serror, SCRIPT_ERR_CISA_GROUP_INVALID);
+        }
+    }
+
+    // Full-agg group
+    if (!fullagg_inputs.empty()) {
+        if (!fullagg_final_seen) {
+            return set_error(serror, SCRIPT_ERR_CISA_GROUP_INVALID);
+        }
+        if (fullagg_sig.size() != 64) {
+            return set_error(serror, SCRIPT_ERR_CISA_GROUP_INVALID);
+        }
+    }
+
+    // If no aggregation groups, nothing to verify at tx level
+    if (halfagg_inputs.empty() && fullagg_inputs.empty()) {
+        return set_success(serror);
+    }
+
+    // ================================================================
+    // Pass 3: Compute sighash messages and verify aggregate signatures
+    // ================================================================
+
+    auto verify_group = [&](const std::vector<AggInputInfo>& group,
+                            std::span<const unsigned char> aggsig,
+                            bool is_half) -> bool {
+        size_t n = group.size();
+        std::vector<XOnlyPubKey> pubkeys(n);
+        std::vector<uint256> msgs(n);
+
+        for (size_t j = 0; j < n; j++) {
+            const auto& info = group[j];
+            pubkeys[j] = info.pubkey;
+
+            // Set up per-input execution data for sighash computation
+            ScriptExecutionData execdata;
+            execdata.m_annex_present = info.has_annex;
+            execdata.m_annex_init = true;
+            if (info.has_annex) {
+                execdata.m_annex_hash = info.annex_hash;
+            }
+
+            // Compute SigMsg(sighash_type, ext_flag=0) — same as BIP341 keypath
+            if (!SignatureHashSchnorr(msgs[j], execdata, tx, info.input_index,
+                                     info.sighash_type, SigVersion::TAPROOT,
+                                     txdata, MissingDataBehavior::FAIL)) {
+                return false;
+            }
+        }
+
+        if (is_half) {
+            return VerifyHalfAggSchnorr(pubkeys, msgs, aggsig);
+        } else {
+            return VerifyFullAggSchnorr(pubkeys, msgs, aggsig);
+        }
+    };
+
+    if (!halfagg_inputs.empty()) {
+        if (!verify_group(halfagg_inputs, halfagg_sig, /*is_half=*/true)) {
+            return set_error(serror, SCRIPT_ERR_CISA_VERIFY_FAILED);
+        }
+    }
+
+    if (!fullagg_inputs.empty()) {
+        if (!verify_group(fullagg_inputs, fullagg_sig, /*is_half=*/false)) {
+            return set_error(serror, SCRIPT_ERR_CISA_VERIFY_FAILED);
+        }
+    }
+
+    return set_success(serror);
+}
+
 size_t static WitnessSigOps(int witversion, const std::vector<unsigned char>& witprogram, const CScriptWitness& witness)
 {
     if (witversion == 0) {

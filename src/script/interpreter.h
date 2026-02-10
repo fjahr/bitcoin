@@ -386,6 +386,24 @@ bool EvalScript(std::vector<std::vector<unsigned char> >& stack, const CScript& 
 bool EvalScript(std::vector<std::vector<unsigned char> >& stack, const CScript& script, script_verify_flags flags, const BaseSignatureChecker& checker, SigVersion sigversion, ScriptError* error = nullptr);
 bool VerifyScript(const CScript& scriptSig, const CScript& scriptPubKey, const CScriptWitness* witness, script_verify_flags flags, const BaseSignatureChecker& checker, ScriptError* serror = nullptr);
 
+/**
+ * Verify cross-input signature aggregation for witness v2 keypath spends.
+ * Must be called after per-input VerifyScript() checks pass.
+ *
+ * Implements the three-pass CISA validation algorithm:
+ * 1. Parse all v2 inputs and collect aggregation group info
+ * 2. Validate group structure (at most one halfagg + one fullagg group)
+ * 3. Compute sighash messages and verify aggregate signatures
+ *
+ * Opted-out inputs (marker 0xbb) are skipped — already verified per-input.
+ */
+bool VerifyCISATransaction(
+    const CTransaction& tx,
+    const std::vector<CTxOut>& spent_outputs,
+    script_verify_flags flags,
+    const PrecomputedTransactionData& txdata,
+    ScriptError* serror = nullptr);
+
 size_t CountWitnessSigOps(const CScript& scriptSig, const CScript& scriptPubKey, const CScriptWitness& witness, script_verify_flags flags);
 
 int FindAndDelete(CScript& script, const CScript& b);
