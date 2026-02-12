@@ -76,7 +76,8 @@ FUZZ_TARGET(script, .init = initialize_script)
         assert(which_type == TxoutType::PUBKEY ||
                which_type == TxoutType::NONSTANDARD ||
                which_type == TxoutType::NULL_DATA ||
-               which_type == TxoutType::MULTISIG);
+               which_type == TxoutType::MULTISIG ||
+               which_type == TxoutType::WITNESS_V2_CISA);
     }
     if (which_type == TxoutType::NONSTANDARD ||
         which_type == TxoutType::NULL_DATA ||

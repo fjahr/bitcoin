@@ -1144,11 +1144,6 @@ bool MemPoolAccept::PolicyScriptChecks(const ATMPArgs& args, Workspace& ws)
 
     script_verify_flags scriptVerifyFlags = STANDARD_SCRIPT_VERIFY_FLAGS;
 
-    // CISA (witness v2) is always active on regtest
-    if (args.m_chainparams.GetChainType() == ChainType::REGTEST) {
-        scriptVerifyFlags |= SCRIPT_VERIFY_WITNESS_V2;
-    }
-
     // Check input scripts and signatures.
     // This is done last to help prevent CPU exhaustion denial-of-service attacks.
     if (!CheckInputScripts(tx, state, m_view, scriptVerifyFlags, true, false, ws.m_precomputed_txdata, GetValidationCache())) {
