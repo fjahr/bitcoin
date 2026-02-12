@@ -369,6 +369,53 @@ public:
     BatchableResult operator()();
 };
 
+/**
+ * CISA aggregate signature verification check. Wraps VerifyCISATransaction()
+ * and returns BatchableResult so it can be queued alongside BatchableScriptCheck
+ * in the parallel check queue. Since CISA performs atomic aggregate verification,
+ * it produces no individual Schnorr signatures for the batch verifier.
+ */
+class CISACheck
+{
+private:
+    const CTransaction* m_tx;
+    const std::vector<CTxOut>* m_spent_outputs;  // non-owning pointer, avoids copy
+    script_verify_flags m_flags;
+    PrecomputedTransactionData* m_txdata;
+
+public:
+    CISACheck() : m_tx(nullptr), m_spent_outputs(nullptr), m_flags{}, m_txdata(nullptr) {}
+    CISACheck(const CTransaction& tx,
+              const std::vector<CTxOut>& spent_outputs,
+              script_verify_flags flags,
+              PrecomputedTransactionData& txdata)
+        : m_tx(&tx), m_spent_outputs(&spent_outputs), m_flags(flags), m_txdata(&txdata) {}
+
+    CISACheck(CISACheck&&) = default;
+    CISACheck& operator=(CISACheck&&) = default;
+
+    BatchableResult operator()();
+};
+
+/**
+ * A check item that can be either a per-input script check or a per-transaction
+ * CISA aggregate check. Both return BatchableResult, allowing them to be
+ * processed by the same CCheckQueue. The variant inherits operator()() via
+ * std::visit dispatch.
+ */
+struct ValidationCheck : std::variant<BatchableScriptCheck, CISACheck>
+{
+    using variant::variant;
+    using variant::operator=;
+
+    BatchableResult operator()()
+    {
+        return std::visit([](auto& check) -> BatchableResult {
+            return check();
+        }, static_cast<variant&>(*this));
+    }
+};
+
 // CScriptCheck is used a lot in std::vector, make sure that's efficient
 static_assert(std::is_nothrow_move_assignable_v<CScriptCheck>);
 static_assert(std::is_nothrow_move_constructible_v<CScriptCheck>);
@@ -982,7 +1029,7 @@ private:
     MockableSteadyClock::time_point m_last_presync_update GUARDED_BY(GetMutex()){};
 
     //! A queue for script verifications that have to be performed by worker threads.
-    CCheckQueue<BatchableScriptCheck, ScriptFailureResult> m_script_check_queue;
+    CCheckQueue<ValidationCheck, ScriptFailureResult> m_script_check_queue;
 
     //! Timers and counters used for benchmarking validation in both background
     //! and active chainstates.
@@ -1366,7 +1413,7 @@ public:
     //! header in our block-index not known to be invalid, recalculate it.
     void RecalculateBestHeader() EXCLUSIVE_LOCKS_REQUIRED(::cs_main);
 
-    CCheckQueue<BatchableScriptCheck, ScriptFailureResult>& GetCheckQueue() { return m_script_check_queue; }
+    CCheckQueue<ValidationCheck, ScriptFailureResult>& GetCheckQueue() { return m_script_check_queue; }
 
     ~ChainstateManager();
 

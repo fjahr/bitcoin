@@ -44,6 +44,7 @@
 #include <random.h>
 #include <script/script.h>
 #include <script/sigcache.h>
+#include <script/interpreter.h>
 #include <signet.h>
 #include <tinyformat.h>
 #include <txdb.h>
@@ -145,7 +146,7 @@ bool CheckInputScripts(const CTransaction& tx, TxValidationState& state,
                        const CCoinsViewCache& inputs, script_verify_flags flags, bool cacheSigStore,
                        bool cacheFullScriptStore, PrecomputedTransactionData& txdata,
                        ValidationCache& validation_cache,
-                       std::vector<BatchableScriptCheck>* pvChecks = nullptr,
+                       std::vector<ValidationCheck>* pvChecks = nullptr,
                        BatchSchnorrVerifier* batch = nullptr)
                        EXCLUSIVE_LOCKS_REQUIRED(cs_main);
 
@@ -2051,6 +2052,18 @@ BatchableResult BatchableScriptCheck::operator()() {
     }
 }
 
+BatchableResult CISACheck::operator()()
+{
+    ScriptError error = SCRIPT_ERR_UNKNOWN_ERROR;
+    if (!VerifyCISATransaction(*m_tx, *m_spent_outputs, m_flags, *m_txdata, &error)) {
+        return ScriptFailureResult{error,
+            strprintf("cisa-verify-failed (%s)", ScriptErrorString(error))};
+    }
+    // CISA does atomic aggregate verification — no individual Schnorr
+    // signatures to feed into the batch verifier.
+    return std::vector<SchnorrSignatureToVerify>{};
+}
+
 ValidationCache::ValidationCache(const size_t script_execution_cache_bytes, const size_t signature_cache_bytes)
     : m_signature_cache{signature_cache_bytes}
 {
@@ -2065,6 +2078,72 @@ ValidationCache::ValidationCache(const size_t script_execution_cache_bytes, cons
     const auto [num_elems, approx_size_bytes] = m_script_execution_cache.setup_bytes(script_execution_cache_bytes);
     LogInfo("Using %zu MiB out of %zu MiB requested for script execution cache, able to store %zu elements",
               approx_size_bytes >> 20, script_execution_cache_bytes >> 20, num_elems);
+}
+
+/**
+ * Quick check whether a scriptPubKey is a witness v2 program (OP_2 + 32 bytes).
+ */
+static bool IsWitnessV2Program(const CScript& scriptPubKey)
+{
+    return scriptPubKey.size() == 34 &&
+           scriptPubKey[0] == OP_2 &&
+           scriptPubKey[1] == 0x20;
+}
+
+/**
+ * Lightweight pre-scan to detect which inputs in a transaction are v2 aggregated.
+ * Returns a vector<bool> indexed by input position; true means aggregated.
+ * Only performs byte-level checks on the first witness element, no crypto.
+ *
+ * Detection logic: the BIP specifies that each v2 keypath spend has a single
+ * witness element (plus optional annex) whose first byte is the marker:
+ *   0xbb = opt-out (NOT aggregated)
+ *   0xbc = half-aggregation (aggregated)
+ *   0xbd = full-aggregation (aggregated)
+ *
+ * We check the first byte of the first witness element (or the first of two
+ * elements when the last element is an annex starting with 0x50).
+ *
+ * If we misclassify, VerifyCISATransaction will catch it during full validation.
+ */
+static std::vector<bool> ScanForAggregatedV2Inputs(
+    const CTransaction& tx,
+    const PrecomputedTransactionData& txdata)
+{
+    std::vector<bool> aggregated(tx.vin.size(), false);
+
+    for (unsigned int i = 0; i < tx.vin.size(); i++) {
+        if (!IsWitnessV2Program(txdata.m_spent_outputs[i].scriptPubKey)) continue;
+
+        // This is a v2 output. Check witness marker to determine aggregation mode.
+        const CScriptWitness& witness = tx.vin[i].scriptWitness;
+        if (witness.IsNull() || witness.stack.empty()) continue;
+
+        // Handle optional annex (last element starting with 0x50 when ≥2 elements)
+        size_t stack_size = witness.stack.size();
+        bool has_annex = (stack_size >= 2 &&
+                          !witness.stack.back().empty() &&
+                          witness.stack.back()[0] == 0x50);
+
+        // The main witness element is the first element (or the only element
+        // if no annex). Per the BIP, v2 keypath spends have exactly one main
+        // element: [marker || optional_sighash || optional_signature].
+        size_t elem_idx = 0;
+        const auto& elem = witness.stack[elem_idx];
+        if (elem.empty()) continue;
+
+        // Check the first byte for an aggregation marker.
+        // 0xbc = half-agg, 0xbd = full-agg → aggregated
+        // 0xbb = opt-out → not aggregated (goes through per-input BIP340 path)
+        // Anything else → not recognized as aggregated, will be caught by
+        //                  VerifyWitnessProgram in the per-input path.
+        uint8_t marker = elem[0];
+        if (marker == 0xbc || marker == 0xbd) {
+            aggregated[i] = true;
+        }
+    }
+
+    return aggregated;
 }
 
 /**
@@ -2090,7 +2169,7 @@ bool CheckInputScripts(const CTransaction& tx, TxValidationState& state,
                        const CCoinsViewCache& inputs, script_verify_flags flags, bool cacheSigStore,
                        bool cacheFullScriptStore, PrecomputedTransactionData& txdata,
                        ValidationCache& validation_cache,
-                       std::vector<BatchableScriptCheck>* pvChecks,
+                       std::vector<ValidationCheck>* pvChecks,
                        BatchSchnorrVerifier* batch)
 {
     if (tx.IsCoinBase()) return true;
@@ -2126,7 +2205,35 @@ bool CheckInputScripts(const CTransaction& tx, TxValidationState& state,
     }
     assert(txdata.m_spent_outputs.size() == tx.vin.size());
 
+    // Pre-scan for aggregated v2 inputs. If found, create a single CISACheck
+    // that handles all of them, and skip them in the per-input loop below.
+    std::vector<bool> aggregated_v2_inputs(tx.vin.size(), false);
+    if (flags & SCRIPT_VERIFY_WITNESS_V2) {
+        aggregated_v2_inputs = ScanForAggregatedV2Inputs(tx, txdata);
+
+        bool has_aggregated = std::any_of(aggregated_v2_inputs.begin(),
+                                          aggregated_v2_inputs.end(),
+                                          [](bool v) { return v; });
+        if (has_aggregated) {
+            if (pvChecks) {
+                // Parallel path: push to queue for worker thread execution
+                pvChecks->emplace_back(CISACheck{tx, txdata.m_spent_outputs,
+                                                  flags, txdata});
+            } else {
+                // Sequential path: run inline
+                CISACheck cisaCheck{tx, txdata.m_spent_outputs, flags, txdata};
+                auto result = cisaCheck();
+                if (std::holds_alternative<ScriptFailureResult>(result)) {
+                    auto& [error, desc] = std::get<ScriptFailureResult>(result);
+                    return state.Invalid(TxValidationResult::TX_CONSENSUS, desc);
+                }
+            }
+        }
+    }
+
     for (unsigned int i = 0; i < tx.vin.size(); i++) {
+        // Skip aggregated v2 inputs — they are handled by CISACheck above
+        if (aggregated_v2_inputs[i]) continue;
 
         // We very carefully only pass in things to CScriptCheck which
         // are clearly committed to by tx' witness hash. This provides
@@ -2558,7 +2665,7 @@ bool Chainstate::ConnectBlock(const CBlock& block, BlockValidationState& state, 
     // in multiple threads). Preallocate the vector size so a new allocation
     // doesn't invalidate pointers into the vector, and keep txsdata in scope
     // for as long as `control`.
-    std::optional<CCheckQueueControl<BatchableScriptCheck, ScriptFailureResult>> control;
+    std::optional<CCheckQueueControl<ValidationCheck, ScriptFailureResult>> control;
     if (auto& queue = m_chainman.GetCheckQueue(); queue.HasThreads() && fScriptChecks) control.emplace(queue);
 
     std::vector<PrecomputedTransactionData> txsdata(block.vtx.size());
@@ -2630,7 +2737,7 @@ bool Chainstate::ConnectBlock(const CBlock& block, BlockValidationState& state, 
             // If CheckInputScripts is called with a pointer to a checks vector, the resulting checks are appended to it. In that case
             // they need to be added to control which runs them asynchronously. Otherwise, CheckInputScripts runs the checks before returning.
             if (control) {
-                std::vector<BatchableScriptCheck> vChecks;
+                std::vector<ValidationCheck> vChecks;
                 tx_ok = CheckInputScripts(tx, tx_state, view, flags, fCacheResults, fCacheResults, txsdata[i], m_chainman.m_validation_cache, &vChecks);
                 if (tx_ok) control->Add(std::move(vChecks));
             } else {
