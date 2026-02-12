@@ -1419,8 +1419,8 @@ void PrecomputedTransactionData::Init(const T& txTo, std::vector<CTxOut>&& spent
     bool uses_bip341_taproot = force;
     for (size_t inpos = 0; inpos < txTo.vin.size() && !(uses_bip143_segwit && uses_bip341_taproot); ++inpos) {
         if (!txTo.vin[inpos].scriptWitness.IsNull()) {
-            if (m_spent_outputs_ready && m_spent_outputs[inpos].scriptPubKey.size() == 2 + WITNESS_V1_TAPROOT_SIZE &&
-                m_spent_outputs[inpos].scriptPubKey[0] == OP_1) {
+            if ((m_spent_outputs[inpos].scriptPubKey.size() == 2 + WITNESS_V1_TAPROOT_SIZE && m_spent_outputs[inpos].scriptPubKey[0] == OP_1) ||
+                (m_spent_outputs[inpos].scriptPubKey.size() == 2 + WITNESS_V2_CISA_SIZE && m_spent_outputs[inpos].scriptPubKey[0] == OP_2)) {
                 // Treat every witness-bearing spend with 34-byte scriptPubKey that starts with OP_1 as a Taproot
                 // spend. This only works if spent_outputs was provided as well, but if it wasn't, actual validation
                 // will fail anyway. Note that this branch may trigger for scriptPubKeys that aren't actually segwit
@@ -2018,10 +2018,10 @@ static bool VerifyWitnessProgram(const CScriptWitness& witness, int witversion, 
         // Handle annex (same rule as BIP341: if >= 2 elements and last starts with 0x50)
         bool has_annex = stack.size() >= 2 && !stack.back().empty() && stack.back()[0] == ANNEX_TAG;
 
-        ScriptExecutionData execdata;
+        execdata.m_annex_present = has_annex;
+        execdata.m_annex_init = true;
+
         if (has_annex) {
-            execdata.m_annex_present = true;
-            execdata.m_annex_init = true;
             HashWriter hw(HASHER_TAPSIGHASH);
             hw << witness.stack.back();
             execdata.m_annex_hash = hw.GetSHA256();
