@@ -263,8 +263,12 @@ bool VerifyHalfAggSchnorr(
         memcpy(flat_msgs.data() + i * 32, msgs[i].begin(), 32);
     }
 
+    // Because we are using ecmult_gen in the aggverify function below we need
+    // to create a signing context here even though we are just verifying.
+    static secp256k1_context* secp256k1_context_aggverify = secp256k1_context_create(SECP256K1_CONTEXT_NONE);
+
     return secp256k1_schnorrsig_aggverify(
-        secp256k1_context_static,
+        secp256k1_context_aggverify,
         secp_pubkeys.data(),
         flat_msgs.data(),
         n,
