@@ -56,6 +56,16 @@ BOOST_FIXTURE_TEST_CASE(txospenderindex_initial_sync, TestChain100Setup)
     txospenderindex.Sync();
     for (size_t i = 0; i < spent.size(); i++) {
         const auto tx_spender{txospenderindex.FindSpender(spent[i])};
+        if (!tx_spender->has_value()) {
+            BOOST_TEST_MESSAGE(strprintf("FindSpender returned nullopt for spent[%d]: %s:%d",
+                                         i, spent[i].hash.GetHex(), spent[i].n));
+            // Dump index summary to see if Sync() actually completed
+            auto summary = txospenderindex.GetSummary();
+            BOOST_TEST_MESSAGE(strprintf("Index synced=%d, best_height=%d, best_hash=%s",
+                                         summary.synced, summary.best_block_height,
+                                         summary.best_block_hash.GetHex()));
+        }
+
         BOOST_REQUIRE(tx_spender.has_value());
         BOOST_REQUIRE(tx_spender->has_value());
         BOOST_CHECK_EQUAL((*tx_spender)->tx->GetHash(), spender[i].GetHash());

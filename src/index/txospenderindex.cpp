@@ -129,7 +129,12 @@ static std::vector<std::pair<COutPoint, CDiskTxPos>> BuildSpenderPositions(const
 
 bool TxoSpenderIndex::CustomAppend(const interfaces::BlockInfo& block)
 {
-    WriteSpenderInfos(BuildSpenderPositions(block));
+    auto items = BuildSpenderPositions(block);
+    if (!items.empty()) {
+        LogInfo("TxoSpenderIndex::CustomAppend height=%d items=%zu file=%d pos=%u\n",
+                  block.height, items.size(), block.file_number, block.data_pos);
+    }
+    WriteSpenderInfos(items);
     return true;
 }
 
