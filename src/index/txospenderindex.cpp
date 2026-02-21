@@ -168,22 +168,64 @@ util::Expected<std::optional<TxoSpender>, std::string> TxoSpenderIndex::FindSpen
     const uint64_t prefix{CreateKeyPrefix(m_siphash_key, txo)};
     std::unique_ptr<CDBIterator> it(m_db->NewIterator());
     DBKey key(prefix, CDiskTxPos());
-
+    int keys_visited{0};
+    int read_successes{0};
+    int read_failures{0};
     // find all keys that start with the outpoint hash, load the transaction at the location specified in the key
     // and return it if it does spend the provided outpoint
     for (it->Seek(std::pair{DB_TXOSPENDERINDEX, prefix}); it->Valid() && it->GetKey(key) && key.hash == prefix; it->Next()) {
+        keys_visited++;
         if (const auto spender{ReadTransaction(key.pos)}) {
+            read_successes++;
             for (const auto& input : spender->tx->vin) {
                 if (input.prevout == txo) {
                     return std::optional{*spender};
                 }
             }
+            LogPrintf("FindSpender DEBUG: key matched but tx didn't spend outpoint %s:%d. "
+                      "pos=(nFile=%d, nPos=%u, nTxOffset=%u) tx=%s num_inputs=%d\n",
+                      txo.hash.GetHex(), txo.n,
+                      key.pos.nFile, key.pos.nPos, key.pos.nTxOffset,
+                      spender->tx->GetHash().GetHex(), spender->tx->vin.size());
         } else {
+            read_failures++;
+            LogPrintf("FindSpender DEBUG: ReadTransaction failed for outpoint %s:%d. "
+                      "pos=(nFile=%d, nPos=%u, nTxOffset=%u) error=%s\n",
+                      txo.hash.GetHex(), txo.n,
+                      key.pos.nFile, key.pos.nPos, key.pos.nTxOffset,
+                      spender.error());
             LogError("Deserialize or I/O error - %s", spender.error());
             return util::Unexpected{strprintf("IO error finding spending tx for outpoint %s:%d.", txo.hash.GetHex(), txo.n)};
         }
     }
+    LogPrintf("FindSpender MISS: outpoint=%s:%d prefix=%016llx "
+              "keys_visited=%d read_ok=%d read_fail=%d\n",
+              txo.hash.GetHex(), txo.n, (unsigned long long)prefix,
+              keys_visited, read_successes, read_failures);
     return util::Expected<std::optional<TxoSpender>, std::string>(std::nullopt);
 }
+
+// util::Expected<std::optional<TxoSpender>, std::string> TxoSpenderIndex::FindSpender(const COutPoint& txo) const
+// {
+//     const uint64_t prefix{CreateKeyPrefix(m_siphash_key, txo)};
+//     std::unique_ptr<CDBIterator> it(m_db->NewIterator());
+//     DBKey key(prefix, CDiskTxPos());
+//
+//     // find all keys that start with the outpoint hash, load the transaction at the location specified in the key
+//     // and return it if it does spend the provided outpoint
+//     for (it->Seek(std::pair{DB_TXOSPENDERINDEX, prefix}); it->Valid() && it->GetKey(key) && key.hash == prefix; it->Next()) {
+//         if (const auto spender{ReadTransaction(key.pos)}) {
+//             for (const auto& input : spender->tx->vin) {
+//                 if (input.prevout == txo) {
+//                     return std::optional{*spender};
+//                 }
+//             }
+//         } else {
+//             LogError("Deserialize or I/O error - %s", spender.error());
+//             return util::Unexpected{strprintf("IO error finding spending tx for outpoint %s:%d.", txo.hash.GetHex(), txo.n)};
+//         }
+//     }
+//     return util::Expected<std::optional<TxoSpender>, std::string>(std::nullopt);
+// }
 
 BaseIndex::DB& TxoSpenderIndex::GetDB() const { return *m_db; }
