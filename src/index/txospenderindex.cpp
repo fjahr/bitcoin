@@ -92,7 +92,11 @@ void TxoSpenderIndex::WriteSpenderInfos(const std::vector<std::pair<COutPoint, C
     CDBBatch batch(*m_db);
     for (const auto& [outpoint, pos] : items) {
         DBKey key(CreateKey(m_siphash_key, outpoint, pos));
-        // key is hash(spent outpoint) | disk pos, value is empty
+        LogInfo("WriteSpenderInfos: outpoint=%s:%d prefix=%016llx "
+                  "pos=(nFile=%d, nPos=%u, nTxOffset=%u)\n",
+                  outpoint.hash.GetHex(), outpoint.n,
+                  (unsigned long long)key.hash,
+                  pos.nFile, pos.nPos, pos.nTxOffset);
         batch.Write(key, "");
     }
     m_db->WriteBatch(batch);
@@ -182,14 +186,14 @@ util::Expected<std::optional<TxoSpender>, std::string> TxoSpenderIndex::FindSpen
                     return std::optional{*spender};
                 }
             }
-            LogPrintf("FindSpender DEBUG: key matched but tx didn't spend outpoint %s:%d. "
+            LogInfo("FindSpender DEBUG: key matched but tx didn't spend outpoint %s:%d. "
                       "pos=(nFile=%d, nPos=%u, nTxOffset=%u) tx=%s num_inputs=%d\n",
                       txo.hash.GetHex(), txo.n,
                       key.pos.nFile, key.pos.nPos, key.pos.nTxOffset,
                       spender->tx->GetHash().GetHex(), spender->tx->vin.size());
         } else {
             read_failures++;
-            LogPrintf("FindSpender DEBUG: ReadTransaction failed for outpoint %s:%d. "
+            LogInfo("FindSpender DEBUG: ReadTransaction failed for outpoint %s:%d. "
                       "pos=(nFile=%d, nPos=%u, nTxOffset=%u) error=%s\n",
                       txo.hash.GetHex(), txo.n,
                       key.pos.nFile, key.pos.nPos, key.pos.nTxOffset,
@@ -198,7 +202,7 @@ util::Expected<std::optional<TxoSpender>, std::string> TxoSpenderIndex::FindSpen
             return util::Unexpected{strprintf("IO error finding spending tx for outpoint %s:%d.", txo.hash.GetHex(), txo.n)};
         }
     }
-    LogPrintf("FindSpender MISS: outpoint=%s:%d prefix=%016llx "
+    LogInfo("FindSpender MISS: outpoint=%s:%d prefix=%016llx "
               "keys_visited=%d read_ok=%d read_fail=%d\n",
               txo.hash.GetHex(), txo.n, (unsigned long long)prefix,
               keys_visited, read_successes, read_failures);
