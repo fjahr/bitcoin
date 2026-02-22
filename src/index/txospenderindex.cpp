@@ -92,11 +92,11 @@ void TxoSpenderIndex::WriteSpenderInfos(const std::vector<std::pair<COutPoint, C
     CDBBatch batch(*m_db);
     for (const auto& [outpoint, pos] : items) {
         DBKey key(CreateKey(m_siphash_key, outpoint, pos));
-        LogInfo("WriteSpenderInfos: outpoint=%s:%d prefix=%016llx "
-                  "pos=(nFile=%d, nPos=%u, nTxOffset=%u)\n",
-                  outpoint.hash.GetHex(), outpoint.n,
-                  (unsigned long long)key.hash,
-                  pos.nFile, pos.nPos, pos.nTxOffset);
+        fprintf(stderr, "WriteSpenderInfos: outpoint=%s:%d prefix=%016llx "
+        "pos=(nFile=%d, nPos=%u, nTxOffset=%u)\n",
+        outpoint.hash.GetHex().c_str(), outpoint.n,
+        (unsigned long long)key.hash,
+        pos.nFile, pos.nPos, pos.nTxOffset);
         batch.Write(key, "");
     }
     m_db->WriteBatch(batch);
@@ -186,50 +186,27 @@ util::Expected<std::optional<TxoSpender>, std::string> TxoSpenderIndex::FindSpen
                     return std::optional{*spender};
                 }
             }
-            LogInfo("FindSpender DEBUG: key matched but tx didn't spend outpoint %s:%d. "
+            fprintf(stderr, "FindSpender DEBUG: key matched but tx didn't spend outpoint %s:%d. "
                       "pos=(nFile=%d, nPos=%u, nTxOffset=%u) tx=%s num_inputs=%d\n",
-                      txo.hash.GetHex(), txo.n,
+                      txo.hash.GetHex().c_str(), txo.n,
                       key.pos.nFile, key.pos.nPos, key.pos.nTxOffset,
-                      spender->tx->GetHash().GetHex(), spender->tx->vin.size());
+                      spender->tx->GetHash().GetHex().c_str(), (int)spender->tx->vin.size());
         } else {
             read_failures++;
-            LogInfo("FindSpender DEBUG: ReadTransaction failed for outpoint %s:%d. "
+            fprintf(stderr, "FindSpender DEBUG: ReadTransaction failed for outpoint %s:%d. "
                       "pos=(nFile=%d, nPos=%u, nTxOffset=%u) error=%s\n",
-                      txo.hash.GetHex(), txo.n,
+                      txo.hash.GetHex().c_str(), txo.n,
                       key.pos.nFile, key.pos.nPos, key.pos.nTxOffset,
-                      spender.error());
+                      spender.error().c_str());
             LogError("Deserialize or I/O error - %s", spender.error());
             return util::Unexpected{strprintf("IO error finding spending tx for outpoint %s:%d.", txo.hash.GetHex(), txo.n)};
         }
     }
-    LogInfo("FindSpender MISS: outpoint=%s:%d prefix=%016llx "
+    fprintf(stderr, "FindSpender MISS: outpoint=%s:%d prefix=%016llx "
               "keys_visited=%d read_ok=%d read_fail=%d\n",
-              txo.hash.GetHex(), txo.n, (unsigned long long)prefix,
+              txo.hash.GetHex().c_str(), txo.n, (unsigned long long)prefix,
               keys_visited, read_successes, read_failures);
     return util::Expected<std::optional<TxoSpender>, std::string>(std::nullopt);
 }
-
-// util::Expected<std::optional<TxoSpender>, std::string> TxoSpenderIndex::FindSpender(const COutPoint& txo) const
-// {
-//     const uint64_t prefix{CreateKeyPrefix(m_siphash_key, txo)};
-//     std::unique_ptr<CDBIterator> it(m_db->NewIterator());
-//     DBKey key(prefix, CDiskTxPos());
-//
-//     // find all keys that start with the outpoint hash, load the transaction at the location specified in the key
-//     // and return it if it does spend the provided outpoint
-//     for (it->Seek(std::pair{DB_TXOSPENDERINDEX, prefix}); it->Valid() && it->GetKey(key) && key.hash == prefix; it->Next()) {
-//         if (const auto spender{ReadTransaction(key.pos)}) {
-//             for (const auto& input : spender->tx->vin) {
-//                 if (input.prevout == txo) {
-//                     return std::optional{*spender};
-//                 }
-//             }
-//         } else {
-//             LogError("Deserialize or I/O error - %s", spender.error());
-//             return util::Unexpected{strprintf("IO error finding spending tx for outpoint %s:%d.", txo.hash.GetHex(), txo.n)};
-//         }
-//     }
-//     return util::Expected<std::optional<TxoSpender>, std::string>(std::nullopt);
-// }
 
 BaseIndex::DB& TxoSpenderIndex::GetDB() const { return *m_db; }
