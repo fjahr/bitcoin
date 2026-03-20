@@ -5518,6 +5518,12 @@ double ChainstateManager::GuessVerificationProgress(const CBlockIndex* pindex) c
         fTxTotal = pindex->m_chain_tx_count + (nNow - block_time) * data.dTxRate;
     }
 
+    auto snapshot_base_block = CurrentChainstate().SnapshotBase();
+    if (snapshot_base_block) {
+        int base_count = GetParams().GetAssumeutxoData().back().m_chain_tx_count;
+        return std::min<double>((pindex->m_chain_tx_count - base_count) / (fTxTotal - base_count), 1.0);
+    }
+
     return std::min<double>(pindex->m_chain_tx_count / fTxTotal, 1.0);
 }
 

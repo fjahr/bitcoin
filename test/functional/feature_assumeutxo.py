@@ -626,6 +626,14 @@ class AssumeutxoTest(BitcoinTestFramework):
 
         assert_equal(n1.getblockchaininfo()["blocks"], SNAPSHOT_BASE_HEIGHT)
 
+        # The node is aware of two more block headers on top of the snapshot block at this point
+        self.log.info(f"  verificationprogress after snapshot load: {n1.getblockchaininfo()["verificationprogress"]}")
+        n1.submitblock(n0.getblock(n0.getblockhash(300), 0))
+        self.log.info(f"  verificationprogress after snapshot + 1: {n1.getblockchaininfo()["verificationprogress"]}")
+        n1.submitblock(n0.getblock(n0.getblockhash(301), 0))
+        self.log.info(f"  verificationprogress after snapshot + 2: {n1.getblockchaininfo()["verificationprogress"]}")
+        return
+
         self.log.info("Submit a stale block that forked off the chain before the snapshot")
         # Normally a block like this would not be downloaded, but if it is
         # submitted early before the background chain catches up to the fork

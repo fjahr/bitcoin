@@ -115,6 +115,7 @@ public:
     const std::string& Bech32HRP() const { return bech32_hrp; }
     const std::vector<uint8_t>& FixedSeeds() const { return vFixedSeeds; }
     const HeadersSyncParams& HeadersSync() const { return m_headers_sync_params; }
+    const std::vector<AssumeutxoData> GetAssumeutxoData() const { return m_assumeutxo_data; }
 
     std::optional<AssumeutxoData> AssumeutxoForHeight(int height) const
     {
