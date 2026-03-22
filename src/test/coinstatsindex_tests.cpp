@@ -123,4 +123,68 @@ BOOST_FIXTURE_TEST_CASE(coinstatsindex_unclean_shutdown, TestChain100Setup)
     }
 }
 
+// Test that the index does not commit ahead of the chainstate's last
+// flushed block. If it did, a subsequent unclean shutdown would corrupt
+// the index, because during reverting it would require blocks that were
+// never flushed to disk.
+BOOST_FIXTURE_TEST_CASE(coinstatsindex_no_commit_ahead_of_flush, TestChain100Setup)
+{
+    Chainstate& chainstate = Assert(m_node.chainman)->ActiveChainstate();
+
+    // Part 1: Sync, then "crash" (stop without flushing). Models a node that
+    // started up, had its index catch up, but never flushed before going down.
+    // The end-of-sync Commit() runs at chain tip (height 100) but
+    // m_last_flushed_block is null, so it is skipped.
+    {
+        CoinStatsIndex index{interfaces::MakeChain(m_node), /*n_cache_size=*/1_MiB};
+        BOOST_REQUIRE(index.Init());
+        index.Sync();
+        BOOST_CHECK_EQUAL(index.GetSummary().best_block_height, 100);
+        index.Stop();
+    }
+    {
+        CoinStatsIndex index{interfaces::MakeChain(m_node), /*n_cache_size=*/1_MiB};
+        BOOST_REQUIRE(index.Init());
+        BOOST_CHECK_EQUAL(index.GetSummary().best_block_height, 0);
+        index.Stop();
+    }
+
+    // Part 2: Restart cleanly. Sync, force a chainstate flush, and drain the
+    // validation queue so the index's ChainStateFlushed callback runs. Now
+    // m_last_flushed_block == tip == 100 and the index can commit.
+    {
+        CoinStatsIndex index{interfaces::MakeChain(m_node), /*n_cache_size=*/1_MiB};
+        BOOST_REQUIRE(index.Init());
+        index.Sync();
+        chainstate.ForceFlushStateToDisk();
+        m_node.chain->context()->validation_signals->SyncWithValidationInterfaceQueue();
+        index.Stop();
+    }
+    {
+        CoinStatsIndex index{interfaces::MakeChain(m_node), /*n_cache_size=*/1_MiB};
+        BOOST_REQUIRE(index.Init());
+        BOOST_CHECK_EQUAL(index.GetSummary().best_block_height, 100);
+        index.Stop();
+    }
+
+    // Part 3: Connect a new block on the chain without flushing
+    // (m_last_flushed_block stays at 100). For a real node this would happen
+    // in parallel with Sync(). Here we do it before Sync() to make the race
+    // state deterministic.
+    CreateAndProcessBlock({}, CScript() << OP_TRUE);
+    {
+        CoinStatsIndex index{interfaces::MakeChain(m_node), /*n_cache_size=*/1_MiB};
+        BOOST_REQUIRE(index.Init());
+        index.Sync();
+        BOOST_CHECK_EQUAL(index.GetSummary().best_block_height, 101);
+        index.Stop();
+    }
+    {
+        CoinStatsIndex index{interfaces::MakeChain(m_node), /*n_cache_size=*/1_MiB};
+        BOOST_REQUIRE(index.Init());
+        BOOST_CHECK_EQUAL(index.GetSummary().best_block_height, 100);
+        index.Stop();
+    }
+}
+
 BOOST_AUTO_TEST_SUITE_END()
