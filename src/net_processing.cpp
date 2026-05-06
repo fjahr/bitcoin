@@ -3748,6 +3748,7 @@ void PeerManagerImpl::ProcessMessage(Peer& peer, CNode& pfrom, const std::string
 
         if (greatest_common_version >= FEATURE_VERSION) {
             // announce supported features
+            MakeAndPushFeature(pfrom, NetMsgFeature::DUMMY, uint32_t{0});
         }
 
         MakeAndPushMessage(pfrom, NetMsgType::VERACK);
@@ -3989,6 +3990,12 @@ void PeerManagerImpl::ProcessMessage(Peer& peer, CNode& pfrom, const std::string
             return;
         }
 
+        if (feature_id == NetMsgFeature::DUMMY) {
+            uint32_t i;
+            feature_data >> i;
+            LogDebug(BCLog::NET, "DUMMY feature supported, i=%d peer=%d", i, pfrom.GetId());
+            return;
+        }
         // ignore unknown feature_id
         LogDebug(BCLog::NET, "unknown feature advertised: %s", SanitizeString(feature_id));
         return;

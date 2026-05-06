@@ -314,6 +314,8 @@ static constexpr size_t MAX_FEATUREID_LENGTH{80};
 static constexpr size_t MAX_FEATUREDATA_LENGTH{512};
 
 namespace NetMsgFeature {
+/** Dummy feature */
+inline constexpr std::string_view DUMMY{"https://github.com/bitcoin/bitcoin/pull/12345"};
 }
 
 /** nServices flags */
