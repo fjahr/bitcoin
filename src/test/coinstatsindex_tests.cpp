@@ -124,6 +124,9 @@ BOOST_FIXTURE_TEST_CASE(coinstatsindex_no_commit_ahead_of_flush, TestChain100Set
         old_tip = m_node.chainman->ActiveChain().Tip();
     }
 
+    std::shared_ptr<const CBlock> new_block;
+    CBlockIndex* new_block_index = nullptr;
+
     {
         CoinStatsIndex index{interfaces::MakeChain(m_node), 1 << 20};
         BOOST_REQUIRE(index.Init());
@@ -134,8 +137,6 @@ BOOST_FIXTURE_TEST_CASE(coinstatsindex_no_commit_ahead_of_flush, TestChain100Set
 
         // Manually create and connect a new block. Since the chainstate was
         // never flushed, m_last_flushed_block is still null.
-        std::shared_ptr<const CBlock> new_block;
-        CBlockIndex* new_block_index = nullptr;
         {
             const CScript script_pub_key{CScript() << ToByteVector(coinbaseKey.GetPubKey()) << OP_CHECKSIG};
             const CBlock block = this->CreateBlock({}, script_pub_key, chainstate);
@@ -169,6 +170,38 @@ BOOST_FIXTURE_TEST_CASE(coinstatsindex_no_commit_ahead_of_flush, TestChain100Set
         // No commits should have gone through (m_last_flushed_block was
         // never set), so the persisted best block height is still 0.
         BOOST_CHECK_EQUAL(index.GetSummary().best_block_height, 0);
+
+        index.Stop();
+    }
+
+    // Flush the chainstate at old_tip, so commits up to it are now allowed.
+    chainstate.ForceFlushStateToDisk();
+
+    {
+        CoinStatsIndex index{interfaces::MakeChain(m_node), 1 << 20};
+        BOOST_REQUIRE(index.Init());
+        index.Sync();
+
+        // Notify the index about the new block again.
+        ValidationInterfaceTest::BlockConnected(ChainstateRole{}, index, new_block, new_block_index);
+
+        // Trigger a commit via ChainStateFlushed. The new block is ahead of the
+        // flushed chainstate, so Commit() should skip it (but the earlier
+        // catch-up to old_tip was committed).
+        const CBlockLocator locator{GetLocator(old_tip)};
+        ValidationInterfaceTest::ChainStateFlushed(ChainstateRole{}, index, locator);
+
+        index.Stop();
+    }
+
+    // Reload the index and verify the committed state.
+    {
+        CoinStatsIndex index{interfaces::MakeChain(m_node), 1 << 20};
+        BOOST_REQUIRE(index.Init());
+
+        // The commit up to the flushed block went through, but the block ahead
+        // of it was skipped, so the persisted best block height is old_tip's.
+        BOOST_CHECK_EQUAL(index.GetSummary().best_block_height, old_tip->nHeight);
 
         index.Stop();
     }
