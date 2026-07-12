@@ -2297,6 +2297,11 @@ script_verify_flags GetBlockScriptFlags(const CBlockIndex& block_index, const Ch
         flags |= SCRIPT_VERIFY_NULLDUMMY;
     }
 
+    // Enforce witness v2 cross-input signature aggregation (BIP 460)
+    if (DeploymentActiveAt(block_index, chainman, Consensus::DEPLOYMENT_CISA)) {
+        flags |= SCRIPT_VERIFY_WITNESS_V2;
+    }
+
     return flags;
 }
 
