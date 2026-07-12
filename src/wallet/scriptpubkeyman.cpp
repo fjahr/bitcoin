@@ -98,6 +98,9 @@ IsMineResult LegacyWalletIsMineInnerDONOTUSE(const LegacyDataSPKM& keystore, con
     case TxoutType::WITNESS_V1_TAPROOT:
     case TxoutType::ANCHOR:
         break;
+   case TxoutType::WITNESS_V2_CISA:
+       ret = IsMineResult::NO;
+       break;
     case TxoutType::PUBKEY:
         keyID = CPubKey(vSolutions[0]).GetID();
         if (!PermitsUncompressed(sigversion) && vSolutions[0].size() != 33) {
