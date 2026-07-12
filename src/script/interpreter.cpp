@@ -408,7 +408,8 @@ static bool EvalChecksig(const valtype& sig, const valtype& pubkey, CScript::con
     case SigVersion::TAPSCRIPT:
         return EvalChecksigTapscript(sig, pubkey, execdata, flags, checker, sigversion, serror, success);
     case SigVersion::TAPROOT:
-        // Key path spending in Taproot has no script, so this is unreachable.
+    case SigVersion::WITNESS_V2_KEYPATH:
+        // Key path spending has no script, so this is unreachable.
         break;
     }
     assert(false);
@@ -1495,6 +1496,7 @@ bool SignatureHashSchnorr(uint256& hash_out, ScriptExecutionData& execdata, cons
     uint8_t ext_flag, key_version;
     switch (sigversion) {
     case SigVersion::TAPROOT:
+    case SigVersion::WITNESS_V2_KEYPATH:
         ext_flag = 0;
         // key_version is not used and left uninitialized.
         break;
@@ -1517,8 +1519,15 @@ bool SignatureHashSchnorr(uint256& hash_out, ScriptExecutionData& execdata, cons
     HashWriter ss{HASHER_TAPSIGHASH};
 
     // Epoch
-    static constexpr uint8_t EPOCH = 0;
-    ss << EPOCH;
+    if (sigversion == SigVersion::WITNESS_V2_KEYPATH) {
+        // BIP460: hash_TapSighash(0x01 || agg_mode || SigMsg(hash_type, 0))
+        static constexpr uint8_t CISA_EPOCH = 1;
+        ss << CISA_EPOCH;
+        ss << execdata.m_cisa_agg_mode;
+    } else {
+        static constexpr uint8_t EPOCH = 0;
+        ss << EPOCH;
+    }
 
     // Hash type
     const uint8_t output_type = (hash_type == SIGHASH_DEFAULT) ? SIGHASH_ALL : (hash_type & SIGHASH_OUTPUT_MASK); // Default (no sighash byte) is equivalent to SIGHASH_ALL
@@ -1726,7 +1735,7 @@ bool GenericTransactionSignatureChecker<T>::CheckECDSASignature(const std::vecto
 template <class T>
 bool GenericTransactionSignatureChecker<T>::CheckSchnorrSignature(std::span<const unsigned char> sig, std::span<const unsigned char> pubkey_in, SigVersion sigversion, ScriptExecutionData& execdata, ScriptError* serror) const
 {
-    assert(sigversion == SigVersion::TAPROOT || sigversion == SigVersion::TAPSCRIPT);
+    assert(sigversion == SigVersion::TAPROOT || sigversion == SigVersion::TAPSCRIPT || sigversion == SigVersion::WITNESS_V2_KEYPATH);
     // Schnorr signatures have 32-byte public keys. The caller is responsible for enforcing this.
     assert(pubkey_in.size() == 32);
     // Note that in Tapscript evaluation, empty signatures are treated specially (invalid signature that does not
