@@ -1426,12 +1426,14 @@ void PrecomputedTransactionData::Init(const T& txTo, std::vector<CTxOut>&& spent
     bool uses_bip341_taproot = force;
     for (size_t inpos = 0; inpos < txTo.vin.size() && !(uses_bip143_segwit && uses_bip341_taproot); ++inpos) {
         if (!txTo.vin[inpos].scriptWitness.IsNull()) {
-            if (m_spent_outputs_ready && m_spent_outputs[inpos].scriptPubKey.size() == 2 + WITNESS_V1_TAPROOT_SIZE &&
-                m_spent_outputs[inpos].scriptPubKey[0] == OP_1) {
-                // Treat every witness-bearing spend with 34-byte scriptPubKey that starts with OP_1 as a Taproot
-                // spend. This only works if spent_outputs was provided as well, but if it wasn't, actual validation
-                // will fail anyway. Note that this branch may trigger for scriptPubKeys that aren't actually segwit
-                // but in that case validation will fail as SCRIPT_ERR_WITNESS_UNEXPECTED anyway.
+            if (m_spent_outputs_ready &&
+                ((m_spent_outputs[inpos].scriptPubKey.size() == 2 + WITNESS_V1_TAPROOT_SIZE && m_spent_outputs[inpos].scriptPubKey[0] == OP_1) ||
+                 (m_spent_outputs[inpos].scriptPubKey.size() == 2 + WITNESS_V2_CISA_SIZE && m_spent_outputs[inpos].scriptPubKey[0] == OP_2))) {
+                // Treat every witness-bearing spend with 34-byte scriptPubKey that starts with OP_1 or OP_2 as a
+                // Taproot or witness v2 spend. These use the same precomputed hashes. This only works if
+                // spent_outputs was provided as well, but if it wasn't, actual validation will fail anyway.
+                // Note that this branch may trigger for scriptPubKeys that aren't actually segwit but in that
+                // case validation will fail as SCRIPT_ERR_WITNESS_UNEXPECTED anyway.
                 uses_bip341_taproot = true;
             } else {
                 // Treat every spend that's not known to native witness v1 as a Witness v0 spend. This branch may
@@ -1933,6 +1935,93 @@ static bool VerifyTaprootCommitment(const std::vector<unsigned char>& control, c
     return q.CheckTapTweak(p, merkle_root, control[0] & 1);
 }
 
+/** Check whether an explicit witness v2 sighash byte is valid (BIP460).
+ *  SIGHASH_DEFAULT is only expressible by omitting the sighash byte. */
+static bool IsValidCISASighashType(uint8_t sighash_type)
+{
+    return (sighash_type >= 0x01 && sighash_type <= 0x03) || (sighash_type >= 0x81 && sighash_type <= 0x83);
+}
+
+std::optional<CISAWitness> ParseCISAWitness(std::span<const unsigned char> elem, ScriptError* serror)
+{
+    if (elem.empty()) {
+        set_error(serror, SCRIPT_ERR_WITNESS_V2_INVALID_MARKER);
+        return std::nullopt;
+    }
+    const uint8_t marker = elem[0];
+    bool has_sighash_byte{false};
+
+    if (marker == CISA_MARKER_OPTOUT) {
+        // Opted-out inputs always carry a 64-byte BIP340 signature.
+        if (elem.size() != 65 && elem.size() != 66) {
+            set_error(serror, SCRIPT_ERR_WITNESS_V2_INVALID_MARKER);
+            return std::nullopt;
+        }
+        has_sighash_byte = elem.size() == 66;
+    } else if (marker == CISA_MARKER_HALFAGG) {
+        // 1 or 2 bytes: aggregation placeholder. (n+1)*32+1 or (n+1)*32+2
+        // bytes: final input carrying the half-aggregate signature. The exact
+        // signature size for the group size n is validated at transaction level.
+        if (elem.size() == 2) {
+            has_sighash_byte = true;
+        } else if (elem.size() != 1) {
+            if (elem.size() >= 65 && (elem.size() - 1) % 32 == 0) {
+                has_sighash_byte = false;
+            } else if (elem.size() >= 66 && (elem.size() - 2) % 32 == 0) {
+                has_sighash_byte = true;
+            } else {
+                set_error(serror, SCRIPT_ERR_WITNESS_V2_INVALID_MARKER);
+                return std::nullopt;
+            }
+        }
+    } else if (marker == CISA_MARKER_FULLAGG) {
+        // 1 or 2 bytes: aggregation placeholder. 65 or 66 bytes: final input
+        // carrying the 64-byte full-aggregate signature.
+        if (elem.size() == 2 || elem.size() == 66) {
+            has_sighash_byte = true;
+        } else if (elem.size() != 1 && elem.size() != 65) {
+            set_error(serror, SCRIPT_ERR_WITNESS_V2_INVALID_MARKER);
+            return std::nullopt;
+        }
+    } else {
+        set_error(serror, SCRIPT_ERR_WITNESS_V2_INVALID_MARKER);
+        return std::nullopt;
+    }
+
+    uint8_t sighash_type{SIGHASH_DEFAULT};
+    if (has_sighash_byte) {
+        sighash_type = elem[1];
+        if (!IsValidCISASighashType(sighash_type)) {
+            set_error(serror, SCRIPT_ERR_WITNESS_V2_INVALID_SIGHASH);
+            return std::nullopt;
+        }
+    }
+    return CISAWitness{marker, sighash_type, elem.subspan(has_sighash_byte ? 2 : 1)};
+}
+
+/** Validate a witness v2 keypath spend at the input level (BIP460).
+ *
+ *  Opted-out inputs are fully verified here. For aggregated inputs only the
+ *  witness structure is validated, the aggregate signatures are verified at
+ *  transaction level in VerifyCISATransaction(). */
+static bool VerifyWitnessV2KeyPath(const valtype& elem, const std::vector<unsigned char>& program, const BaseSignatureChecker& checker, ScriptExecutionData& execdata, ScriptError* serror)
+{
+    const auto parsed{ParseCISAWitness(elem, serror)};
+    if (!parsed) return false;
+    if (parsed->marker == CISA_MARKER_OPTOUT) {
+        // The signature message commits to the aggregation mode.
+        execdata.m_cisa_agg_mode = parsed->marker;
+        // Present the signature to the checker in BIP341 form: 64 bytes for
+        // SIGHASH_DEFAULT, 65 bytes with the sighash type appended otherwise.
+        valtype sig{parsed->signature.begin(), parsed->signature.end()};
+        if (parsed->sighash_type != SIGHASH_DEFAULT) sig.push_back(parsed->sighash_type);
+        if (!checker.CheckSchnorrSignature(sig, program, SigVersion::WITNESS_V2_KEYPATH, execdata, serror)) {
+            return false; // serror is set
+        }
+    }
+    return set_success(serror);
+}
+
 static bool VerifyWitnessProgram(const CScriptWitness& witness, int witversion, const std::vector<unsigned char>& program, script_verify_flags flags, const BaseSignatureChecker& checker, ScriptError* serror, bool is_p2sh)
 {
     CScript exec_script; //!< Actually executed script (last stack item in P2WSH; implied P2PKH script in P2WPKH; leaf script in P2TR)
@@ -1963,9 +2052,12 @@ static bool VerifyWitnessProgram(const CScriptWitness& witness, int witversion, 
         } else {
             return set_error(serror, SCRIPT_ERR_WITNESS_PROGRAM_WRONG_LENGTH);
         }
-    } else if (witversion == 1 && program.size() == WITNESS_V1_TAPROOT_SIZE && !is_p2sh) {
-        // BIP341 Taproot: 32-byte non-P2SH witness v1 program (which encodes a P2C-tweaked pubkey)
-        if (!(flags & SCRIPT_VERIFY_TAPROOT)) return set_success(serror);
+    } else if (((witversion == 1 && program.size() == WITNESS_V1_TAPROOT_SIZE) ||
+                (witversion == 2 && program.size() == WITNESS_V2_CISA_SIZE)) && !is_p2sh) {
+        // BIP341 Taproot: 32-byte non-P2SH witness v1 program (which encodes a P2C-tweaked pubkey),
+        // or BIP460 witness v2: same program construction with marker-based keypath spending.
+        if (witversion == 1 && !(flags & SCRIPT_VERIFY_TAPROOT)) return set_success(serror);
+        if (witversion == 2 && !(flags & SCRIPT_VERIFY_WITNESS_V2)) return set_success(serror);
         if (stack.size() == 0) return set_error(serror, SCRIPT_ERR_WITNESS_PROGRAM_WITNESS_EMPTY);
         if (stack.size() >= 2 && !stack.back().empty() && stack.back()[0] == ANNEX_TAG) {
             // Drop annex (this is non-standard; see IsWitnessStandard)
@@ -1978,6 +2070,9 @@ static bool VerifyWitnessProgram(const CScriptWitness& witness, int witversion, 
         execdata.m_annex_init = true;
         if (stack.size() == 1) {
             // Key path spending (stack size is 1 after removing optional annex)
+            if (witversion == 2) {
+                return VerifyWitnessV2KeyPath(stack.front(), program, checker, execdata, serror);
+            }
             if (!checker.CheckSchnorrSignature(stack.front(), program, SigVersion::TAPROOT, execdata, serror)) {
                 return false; // serror is set
             }
