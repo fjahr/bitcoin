@@ -150,7 +150,7 @@ bool CheckInputScripts(const CTransaction& tx, TxValidationState& state,
                        const CCoinsViewCache& inputs, script_verify_flags flags, bool cacheSigStore,
                        bool cacheFullScriptStore, PrecomputedTransactionData& txdata,
                        ValidationCache& validation_cache,
-                       std::vector<CScriptCheck>* pvChecks = nullptr)
+                       std::vector<ValidationCheck>* pvChecks = nullptr)
                        EXCLUSIVE_LOCKS_REQUIRED(cs_main);
 
 bool CheckFinalTxAtTip(const CBlockIndex& active_chain_tip, const CTransaction& tx)
@@ -2035,6 +2035,16 @@ std::optional<std::pair<ScriptError, std::string>> CScriptCheck::operator()() {
     }
 }
 
+std::optional<std::pair<ScriptError, std::string>> CISACheck::operator()()
+{
+    ScriptError error{SCRIPT_ERR_UNKNOWN_ERROR};
+    if (VerifyCISATransaction(*m_tx, *m_spent_outputs, m_flags, *m_txdata, &error)) {
+        return std::nullopt;
+    }
+    auto debug_str = strprintf("CISA aggregate verification of %s (wtxid %s)", m_tx->GetHash().ToString(), m_tx->GetWitnessHash().ToString());
+    return std::make_pair(error, std::move(debug_str));
+}
+
 ValidationCache::ValidationCache(const size_t script_execution_cache_bytes, const size_t signature_cache_bytes)
     : m_signature_cache{signature_cache_bytes}
 {
@@ -2049,6 +2059,25 @@ ValidationCache::ValidationCache(const size_t script_execution_cache_bytes, cons
     const auto [num_elems, approx_size_bytes] = m_script_execution_cache.setup_bytes(script_execution_cache_bytes);
     LogInfo("Using %zu MiB out of %zu MiB requested for script execution cache, able to store %zu elements",
               approx_size_bytes >> 20, script_execution_cache_bytes >> 20, num_elems);
+}
+
+/**
+ * Whether the transaction spends any witness v2 output whose keypath witness
+ * carries an aggregation marker (BIP460). A false positive from the cheap
+ * byte-level checks here is harmless since VerifyCISATransaction() re-parses
+ * all witness v2 inputs and succeeds when no aggregation groups are found.
+ */
+static bool SpendsAggregatedWitnessV2Inputs(const CTransaction& tx, const PrecomputedTransactionData& txdata)
+{
+    for (unsigned int i = 0; i < tx.vin.size(); i++) {
+        const CScript& script_pubkey = txdata.m_spent_outputs[i].scriptPubKey;
+        if (!(script_pubkey.size() == 2 + WITNESS_V2_CISA_SIZE && script_pubkey[0] == OP_2 && script_pubkey[1] == WITNESS_V2_CISA_SIZE)) continue;
+        const auto& stack = tx.vin[i].scriptWitness.stack;
+        if (stack.empty() || stack.front().empty()) continue;
+        const uint8_t marker{stack.front()[0]};
+        if (marker == CISA_MARKER_HALFAGG || marker == CISA_MARKER_FULLAGG) return true;
+    }
+    return false;
 }
 
 /**
@@ -2074,7 +2103,7 @@ bool CheckInputScripts(const CTransaction& tx, TxValidationState& state,
                        const CCoinsViewCache& inputs, script_verify_flags flags, bool cacheSigStore,
                        bool cacheFullScriptStore, PrecomputedTransactionData& txdata,
                        ValidationCache& validation_cache,
-                       std::vector<CScriptCheck>* pvChecks)
+                       std::vector<ValidationCheck>* pvChecks)
 {
     if (tx.IsCoinBase()) return true;
 
@@ -2108,6 +2137,23 @@ bool CheckInputScripts(const CTransaction& tx, TxValidationState& state,
         txdata.Init(tx, std::move(spent_outputs));
     }
     assert(txdata.m_spent_outputs.size() == tx.vin.size());
+
+    // Transactions spending aggregated witness v2 inputs get one additional
+    // transaction level check verifying the aggregate signatures (BIP460).
+    // The per-input checks below still validate the witness structure of
+    // every input.
+    if ((flags & SCRIPT_VERIFY_WITNESS_V2) && SpendsAggregatedWitnessV2Inputs(tx, txdata)) {
+        CISACheck check(tx, txdata.m_spent_outputs, flags, txdata);
+        if (pvChecks) {
+            pvChecks->emplace_back(std::move(check));
+        } else if (auto result = check(); result.has_value()) {
+            if (flags & STANDARD_NOT_MANDATORY_VERIFY_FLAGS) {
+                return state.Invalid(TxValidationResult::TX_NOT_STANDARD, strprintf("mempool-script-verify-flag-failed (%s)", ScriptErrorString(result->first)), result->second);
+            } else {
+                return state.Invalid(TxValidationResult::TX_CONSENSUS, strprintf("block-script-verify-flag-failed (%s)", ScriptErrorString(result->first)), result->second);
+            }
+        }
+    }
 
     for (unsigned int i = 0; i < tx.vin.size(); i++) {
 
@@ -2297,7 +2343,7 @@ script_verify_flags GetBlockScriptFlags(const CBlockIndex& block_index, const Ch
         flags |= SCRIPT_VERIFY_NULLDUMMY;
     }
 
-    // Enforce witness v2 cross-input signature aggregation (BIP 460)
+    // Enforce witness v2 cross-input signature aggregation (BIP460)
     if (DeploymentActiveAt(block_index, chainman, Consensus::DEPLOYMENT_CISA)) {
         flags |= SCRIPT_VERIFY_WITNESS_V2;
     }
@@ -2529,7 +2575,7 @@ bool Chainstate::ConnectBlock(const CBlock& block, BlockValidationState& state, 
     // doesn't invalidate pointers into the vector, and keep txsdata in scope
     // for as long as `control`.
     std::vector<PrecomputedTransactionData> txsdata(block.vtx.size());
-    std::optional<CCheckQueueControl<CScriptCheck>> control;
+    std::optional<CCheckQueueControl<ValidationCheck>> control;
     if (auto& queue = m_chainman.GetCheckQueue(); queue.HasThreads() && fScriptChecks) control.emplace(queue);
 
     std::vector<int> prevheights;
@@ -2595,7 +2641,7 @@ bool Chainstate::ConnectBlock(const CBlock& block, BlockValidationState& state, 
             // If CheckInputScripts is called with a pointer to a checks vector, the resulting checks are appended to it. In that case
             // they need to be added to control which runs them asynchronously. Otherwise, CheckInputScripts runs the checks before returning.
             if (control) {
-                std::vector<CScriptCheck> vChecks;
+                std::vector<ValidationCheck> vChecks;
                 tx_ok = CheckInputScripts(tx, tx_state, view, flags, fCacheResults, fCacheResults, txsdata[i], m_chainman.m_validation_cache, &vChecks);
                 if (tx_ok) control->Add(std::move(vChecks));
             } else {
