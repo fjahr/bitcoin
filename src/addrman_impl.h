@@ -15,6 +15,7 @@
 #include <util/time.h>
 
 #include <cstdint>
+#include <map>
 #include <optional>
 #include <set>
 #include <unordered_map>
@@ -132,7 +133,7 @@ public:
 
     std::pair<CAddress, NodeSeconds> SelectTriedCollision() EXCLUSIVE_LOCKS_REQUIRED(!cs);
 
-    std::pair<CAddress, NodeSeconds> Select(bool new_only, const std::unordered_set<Network>& networks) const
+    std::pair<CAddress, NodeSeconds> Select(bool new_only, const std::unordered_set<Network>& networks, NetGroupBias bias) const
         EXCLUSIVE_LOCKS_REQUIRED(!cs);
 
     std::vector<CAddress> GetAddr(size_t max_addresses, size_t max_pct, std::optional<Network> network, bool filtered = true) const
@@ -231,6 +232,9 @@ private:
     /** Number of entries in addrman per network and new/tried table. */
     std::unordered_map<Network, NewTriedCount> m_network_counts GUARDED_BY(cs);
 
+    /** Number of entries in addrman per netgroup and new/tried table. */
+    std::map<std::vector<unsigned char>, NewTriedCount> m_netgroup_counts GUARDED_BY(cs);
+
     //! Find an entry.
     AddrInfo* Find(const CService& addr, nid_type* pnId = nullptr) EXCLUSIVE_LOCKS_REQUIRED(cs);
 
@@ -259,7 +263,7 @@ private:
 
     void Attempt_(const CService& addr, bool fCountFailure, NodeSeconds time) EXCLUSIVE_LOCKS_REQUIRED(cs);
 
-    std::pair<CAddress, NodeSeconds> Select_(bool new_only, const std::unordered_set<Network>& networks) const EXCLUSIVE_LOCKS_REQUIRED(cs);
+    std::pair<CAddress, NodeSeconds> Select_(bool new_only, const std::unordered_set<Network>& networks, NetGroupBias bias) const EXCLUSIVE_LOCKS_REQUIRED(cs);
 
     /** Helper to generalize looking up an addrman entry from either table.
      *

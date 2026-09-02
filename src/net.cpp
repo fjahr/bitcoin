@@ -2888,12 +2888,15 @@ void CConnman::ThreadOpenConnections(const std::vector<std::string> connect, std
                 }
             } else {
                 // Not a feeler
+                // Block-relay-only connections sample netgroups uniformly, all other
+                // connections weight them by the square root of their address count.
+                const NetGroupBias bias{conn_type == ConnectionType::BLOCK_RELAY ? NetGroupBias::UNIFORM : NetGroupBias::SQRT};
                 // If preferred_net has a value set, pick an extra outbound
                 // peer from that network. The eviction logic in net_processing
                 // ensures that a peer from another network will be evicted.
                 std::tie(addr, addr_last_try) = preferred_net.has_value()
-                    ? addrman.get().Select(false, {*preferred_net})
-                    : addrman.get().Select(false, reachable_nets);
+                    ? addrman.get().Select(false, {*preferred_net}, bias)
+                    : addrman.get().Select(false, reachable_nets, bias);
             }
 
             // Require outbound IPv4/IPv6 connections, other than feelers, to be to distinct network groups

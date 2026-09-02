@@ -348,6 +348,39 @@ BOOST_AUTO_TEST_CASE(addrman_select_special)
     BOOST_CHECK(addrman->Select(/*new_only=*/false, {NET_IPV4}).first == addr1);
 }
 
+BOOST_AUTO_TEST_CASE(addrman_select_netgroup_bias)
+{
+    auto addrman = std::make_unique<AddrMan>(EMPTY_NETGROUPMAN, DETERMINISTIC, GetCheckRatio(m_node));
+
+    // 32 addresses in one /16, 8 in distinct /16s
+    for (int i = 0; i < 32; ++i) {
+        const CService addr{ResolveService(strprintf("250.1.%d.%d", i / 4 + 1, i % 4 + 1), 8333)};
+        BOOST_CHECK(addrman->Add({CAddress(addr, NODE_NONE)}, ResolveIP(strprintf("250.%d.1.1", i + 10))));
+    }
+    for (int i = 0; i < 8; ++i) {
+        const CService addr{ResolveService(strprintf("250.%d.1.1", i + 2), 8333)};
+        BOOST_CHECK(addrman->Add({CAddress(addr, NODE_NONE)}, ResolveIP(strprintf("250.%d.1.1", i + 50))));
+    }
+    BOOST_CHECK_EQUAL(addrman->Size(), 40U);
+
+    const auto large_group{EMPTY_NETGROUPMAN.GetGroup(ResolveIP("250.1.1.1"))};
+    const auto large_group_hits{[&](NetGroupBias bias) {
+        int hits{0};
+        for (int i = 0; i < 1000; ++i) {
+            if (EMPTY_NETGROUPMAN.GetGroup(addrman->Select(/*new_only=*/true, /*networks=*/{}, bias).first) == large_group) ++hits;
+        }
+        return hits;
+    }};
+
+    // Expected share of the large netgroup: 32/40 with PROPORTIONAL,
+    // sqrt(32)/(sqrt(32)+8) with SQRT and 1/9 with UNIFORM.
+    BOOST_CHECK_GT(large_group_hits(NetGroupBias::PROPORTIONAL), 700);
+    const int hits_sqrt{large_group_hits(NetGroupBias::SQRT)};
+    BOOST_CHECK_GT(hits_sqrt, 300);
+    BOOST_CHECK_LT(hits_sqrt, 600);
+    BOOST_CHECK_LT(large_group_hits(NetGroupBias::UNIFORM), 250);
+}
+
 BOOST_AUTO_TEST_CASE(addrman_new_collisions)
 {
     auto addrman = std::make_unique<AddrMan>(EMPTY_NETGROUPMAN, DETERMINISTIC, GetCheckRatio(m_node));

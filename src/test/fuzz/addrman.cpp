@@ -186,7 +186,8 @@ FUZZ_TARGET(addrman, .init = initialize_addrman)
             nets.insert(net);
         }
     }
-    (void)const_addr_man.Select(fuzzed_data_provider.ConsumeBool(), nets);
+    const NetGroupBias bias{fuzzed_data_provider.PickValueInArray({NetGroupBias::PROPORTIONAL, NetGroupBias::SQRT, NetGroupBias::UNIFORM})};
+    (void)const_addr_man.Select(fuzzed_data_provider.ConsumeBool(), nets, bias);
 
     std::optional<bool> in_new;
     if (fuzzed_data_provider.ConsumeBool()) {

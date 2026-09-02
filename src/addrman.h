@@ -77,6 +77,15 @@ struct AddressPosition {
         : tried{tried_in}, multiplicity{multiplicity_in}, bucket{bucket_in}, position{position_in} {}
 };
 
+/** How the selection probability of an IPv4/IPv6 netgroup in AddrMan::Select()
+ *  depends on its address count. A linear dependency lets an attacker raise
+ *  their selection probability by adding addresses to the netgroups they control. */
+enum class NetGroupBias {
+    PROPORTIONAL, //!< Grows linearly with the address count
+    SQRT,         //!< Grows with the square root of the address count
+    UNIFORM,      //!< Independent of the address count
+};
+
 /** Stochastic address manager
  *
  * Design goals:
@@ -178,10 +187,11 @@ public:
      *                     guarantee a tried entry).
      * @param[in] networks Select only addresses of these networks (empty = all). Passing networks may
      *                     slow down the search.
+     * @param[in] bias     How to weight the netgroups of IPv4/IPv6 addresses.
      * @return    CAddress The record for the selected peer.
      *            seconds  The last time we attempted to connect to that peer.
      */
-    std::pair<CAddress, NodeSeconds> Select(bool new_only = false, const std::unordered_set<Network>& networks = {}) const;
+    std::pair<CAddress, NodeSeconds> Select(bool new_only = false, const std::unordered_set<Network>& networks = {}, NetGroupBias bias = NetGroupBias::PROPORTIONAL) const;
 
     /**
      * Return all or many randomly selected addresses, optionally by network.
