@@ -2238,26 +2238,33 @@ DisconnectResult Chainstate::DisconnectBlock(const CBlock& block, const CBlockIn
     return fClean ? DISCONNECT_OK : DISCONNECT_UNCLEAN;
 }
 
-namespace {
-template<script_verify_flag_name VFN>
-script_verify_flags add_pending_flag(const Consensus::Params& params, auto dep)
-{
-    static_assert((VFN & STANDARD_SCRIPT_VERIFY_FLAGS) == VFN, "pending flags must be included in STANDARD_SCRIPT_VERIFY_FLAGS");
+constexpr script_verify_flags BASE_BLOCK_SCRIPT_FLAGS{SCRIPT_VERIFY_P2SH | SCRIPT_VERIFY_WITNESS | SCRIPT_VERIFY_TAPROOT};
 
-    if (DeploymentEnabled(params, dep)) return VFN;
-    return 0;
+constexpr std::pair<Consensus::BuriedDeployment, script_verify_flag_name> BURIED_DEPLOYMENT_SCRIPT_FLAGS[]{
+    {Consensus::DEPLOYMENT_DERSIG, SCRIPT_VERIFY_DERSIG},            // BIP66
+    {Consensus::DEPLOYMENT_CLTV, SCRIPT_VERIFY_CHECKLOCKTIMEVERIFY}, // BIP65
+    {Consensus::DEPLOYMENT_CSV, SCRIPT_VERIFY_CHECKSEQUENCEVERIFY},  // BIP112
+    {Consensus::DEPLOYMENT_SEGWIT, SCRIPT_VERIFY_NULLDUMMY},         // BIP147
+};
+
+static consteval script_verify_flags MaxBlockScriptFlags()
+{
+    script_verify_flags flags{BASE_BLOCK_SCRIPT_FLAGS};
+    for (const auto& [dep, flag] : BURIED_DEPLOYMENT_SCRIPT_FLAGS) {
+        flags |= flag;
+    }
+    return flags;
 }
-} // namespace
+// Ensure the mempool can not accept txs that become invalid once a deployment activates.
+static_assert((MaxBlockScriptFlags() & STANDARD_SCRIPT_VERIFY_FLAGS) == MaxBlockScriptFlags(),
+              "block script flags must be included in STANDARD_SCRIPT_VERIFY_FLAGS");
 
 script_verify_flags ChainstateManager::GetAllConsensusScriptFlags(const Consensus::Params& params)
 {
-    script_verify_flags flags{SCRIPT_VERIFY_P2SH | SCRIPT_VERIFY_WITNESS | SCRIPT_VERIFY_TAPROOT};
-    flags |= add_pending_flag<SCRIPT_VERIFY_DERSIG>(params, Consensus::DEPLOYMENT_DERSIG);
-    flags |= add_pending_flag<SCRIPT_VERIFY_CHECKLOCKTIMEVERIFY>(params, Consensus::DEPLOYMENT_CLTV);
-    flags |= add_pending_flag<SCRIPT_VERIFY_CHECKSEQUENCEVERIFY>(params, Consensus::DEPLOYMENT_CSV);
-    flags |= add_pending_flag<SCRIPT_VERIFY_NULLDUMMY>(params, Consensus::DEPLOYMENT_SEGWIT);
-
-    assert((flags & STANDARD_SCRIPT_VERIFY_FLAGS) == flags); // consensus flags should be a subset of STANDARD
+    script_verify_flags flags{BASE_BLOCK_SCRIPT_FLAGS};
+    for (const auto& [dep, flag] : BURIED_DEPLOYMENT_SCRIPT_FLAGS) {
+        if (DeploymentEnabled(params, dep)) flags |= flag;
+    }
     return flags;
 }
 
@@ -2273,34 +2280,15 @@ script_verify_flags GetBlockScriptFlags(const CBlockIndex& block_index, const Ch
     // mainnet.
     // For simplicity, always leave P2SH+WITNESS+TAPROOT on except for the two
     // violating blocks.
-    script_verify_flags flags{SCRIPT_VERIFY_P2SH | SCRIPT_VERIFY_WITNESS | SCRIPT_VERIFY_TAPROOT};
+    script_verify_flags flags{BASE_BLOCK_SCRIPT_FLAGS};
     const auto it{consensusparams.script_flag_exceptions.find(*Assert(block_index.phashBlock))};
     if (it != consensusparams.script_flag_exceptions.end()) {
         flags = it->second;
     }
 
-    // Enforce the DERSIG (BIP66) rule
-    if (DeploymentActiveAt(block_index, chainman, Consensus::DEPLOYMENT_DERSIG)) {
-        flags |= SCRIPT_VERIFY_DERSIG;
+    for (const auto& [dep, flag] : BURIED_DEPLOYMENT_SCRIPT_FLAGS) {
+        if (DeploymentActiveAt(block_index, chainman, dep)) flags |= flag;
     }
-
-    // Enforce CHECKLOCKTIMEVERIFY (BIP65)
-    if (DeploymentActiveAt(block_index, chainman, Consensus::DEPLOYMENT_CLTV)) {
-        flags |= SCRIPT_VERIFY_CHECKLOCKTIMEVERIFY;
-    }
-
-    // Enforce CHECKSEQUENCEVERIFY (BIP112)
-    if (DeploymentActiveAt(block_index, chainman, Consensus::DEPLOYMENT_CSV)) {
-        flags |= SCRIPT_VERIFY_CHECKSEQUENCEVERIFY;
-    }
-
-    // Enforce BIP147 NULLDUMMY (activated simultaneously with segwit)
-    if (DeploymentActiveAt(block_index, chainman, Consensus::DEPLOYMENT_SEGWIT)) {
-        flags |= SCRIPT_VERIFY_NULLDUMMY;
-    }
-
-    // Note: flags returned from this function must also be included in
-    // GetAllConsensusScriptFlags() above.
 
     return flags;
 }
