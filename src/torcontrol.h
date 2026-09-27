@@ -9,10 +9,14 @@
 #define BITCOIN_TORCONTROL_H
 
 #include <netaddress.h>
+#include <sync.h>
 #include <util/fs.h>
 #include <util/sock.h>
 #include <util/threadinterrupt.h>
 
+#include <atomic>
+#include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <deque>
 #include <functional>
@@ -132,10 +136,13 @@ public:
     fs::path GetPrivateKeyFile();
 
     /** Interrupt the controller thread */
-    void Interrupt();
+    void Interrupt() EXCLUSIVE_LOCKS_REQUIRED(!m_network_mutex);
 
     /** Wait for the controller thread to exit */
     void Join();
+
+    /** Enable or disable Tor control connectivity based on networkactive. */
+    void SetNetworkActive(bool active) EXCLUSIVE_LOCKS_REQUIRED(!m_network_mutex);
 private:
     CThreadInterrupt m_interrupt;
     std::thread m_thread;
@@ -153,7 +160,13 @@ private:
     std::vector<uint8_t> m_client_nonce;
 
     /// \anchor torcontrol
-    void ThreadControl();
+    std::atomic_bool m_network_active{false};
+    /** Set when the network is activated, consumed by the control thread to reset the reconnect backoff */
+    std::atomic_bool m_network_activated{false};
+    /** Wakes the control thread on network activity changes and interrupts */
+    Mutex m_network_mutex;
+    std::condition_variable m_network_cv;
+    void ThreadControl() EXCLUSIVE_LOCKS_REQUIRED(!m_network_mutex);
 
 public:
     /** Callback for GETINFO net/listeners/socks result */
@@ -169,7 +182,7 @@ public:
     /** Callback after successful connection */
     void connected_cb(TorControlConnection& conn);
     /** Callback after connection lost or failed connection attempt */
-    void disconnected_cb(TorControlConnection& conn);
+    void disconnected_cb(TorControlConnection& conn) EXCLUSIVE_LOCKS_REQUIRED(!m_network_mutex);
 };
 
 #endif // BITCOIN_TORCONTROL_H

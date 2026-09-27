@@ -377,6 +377,7 @@ void TorController::Interrupt()
 {
     m_reconnect = false;
     m_interrupt();
+    WITH_LOCK(m_network_mutex, m_network_cv.notify_all());
 }
 
 void TorController::Join()
@@ -386,15 +387,31 @@ void TorController::Join()
     }
 }
 
+void TorController::SetNetworkActive(bool active)
+{
+    m_network_active = active;
+    if (active) m_network_activated = true;
+    WITH_LOCK(m_network_mutex, m_network_cv.notify_all());
+}
+
 void TorController::ThreadControl()
 {
     LogDebug(BCLog::TOR, "Entering Tor control thread");
 
     while (!m_interrupt) {
+        {
+            WAIT_LOCK(m_network_mutex, lock);
+            m_network_cv.wait(lock, [&] { return m_network_active || m_interrupt; });
+        }
+        if (m_interrupt) break;
+        if (m_network_activated.exchange(false)) {
+            m_reconnect_timeout = RECONNECT_TIMEOUT_START;
+        }
+
         LogDebug(BCLog::TOR, "Attempting to connect to Tor control port %s", m_tor_control_center);
         if (m_conn.Connect(m_tor_control_center)) {
             connected_cb(m_conn);
-            while (!m_interrupt) {
+            while (!m_interrupt && m_network_active.load()) {
                 if (!m_conn.WaitForData(std::chrono::seconds(1))) {
                     if (m_conn.IsConnected()) continue;
                     LogDebug(BCLog::TOR, "Lost connection to Tor control port");
@@ -715,12 +732,23 @@ void TorController::disconnected_cb(TorControlConnection& _conn)
     m_service = CService();
     if (!m_reconnect)
         return;
+    if (!m_network_active) {
+        LogDebug(BCLog::TOR, "Network inactive, not reconnecting to Tor control port");
+        _conn.Disconnect();
+        return;
+    }
 
     LogDebug(BCLog::TOR, "Not connected to Tor control port %s, retrying in %.2f s",
              m_tor_control_center, m_reconnect_timeout.count());
     _conn.Disconnect();
 
-    m_interrupt.sleep_for(std::chrono::duration_cast<std::chrono::milliseconds>(m_reconnect_timeout));
+    // Only an activation during the wait should cut it short and reset the backoff.
+    m_network_activated = false;
+    {
+        WAIT_LOCK(m_network_mutex, lock);
+        m_network_cv.wait_for(lock, std::chrono::duration_cast<std::chrono::milliseconds>(m_reconnect_timeout),
+                              [&] { return m_network_activated || m_interrupt; });
+    }
     m_reconnect_timeout = std::min(m_reconnect_timeout * RECONNECT_TIMEOUT_EXP, RECONNECT_TIMEOUT_MAX);
 }
 
