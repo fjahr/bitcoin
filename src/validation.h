@@ -59,9 +59,6 @@ class DisconnectedBlockTransactions;
 struct PrecomputedTransactionData;
 struct LockPoints;
 struct AssumeutxoData;
-namespace kernel {
-struct ChainstateRole;
-} // namespace kernel
 namespace node {
 class SnapshotMetadata;
 } // namespace node
@@ -586,12 +583,6 @@ public:
 
     //! Return path to chainstate leveldb directory.
     fs::path StoragePath() const;
-
-    //! Return the current role of the chainstate. See `ChainstateManager`
-    //! documentation for a description of the different types of chainstates.
-    //!
-    //! @sa ChainstateRole
-    kernel::ChainstateRole GetRole() const EXCLUSIVE_LOCKS_REQUIRED(::cs_main);
 
     /**
      * Initialize the CoinsViews UTXO set database management data structures. The in-memory

@@ -26,7 +26,6 @@
 #include <kernel/mempool_entry.h>
 #include <kernel/messagestartchars.h>
 #include <kernel/notifications_interface.h>
-#include <kernel/types.h>
 #include <kernel/warning.h>
 #include <logging/timer.h>
 #include <node/blockstorage.h>
@@ -79,7 +78,6 @@
 #include <utility>
 
 using kernel::CCoinsStats;
-using kernel::ChainstateRole;
 using kernel::CoinStatsHashType;
 using kernel::ComputeUTXOStats;
 using kernel::Notifications;
@@ -2263,9 +2261,8 @@ script_verify_flags GetBlockScriptFlags(const CBlockIndex& block_index, const Ch
 bool Chainstate::ConnectBlock(const CBlock& block, BlockValidationState& state, CBlockIndex* pindex,
                                CCoinsViewCache& view, bool fJustCheck)
 {
-    const kernel::ChainstateRole role{GetRole()};
     return m_chainman.ConnectBlock(block, state, pindex, view, fJustCheck,
-                                   role.validated ? &m_last_script_check_reason_logged : nullptr);
+                                   m_assumeutxo == Assumeutxo::VALIDATED ? &m_last_script_check_reason_logged : nullptr);
 }
 
 bool ChainstateManager::ConnectBlock(const CBlock& block, BlockValidationState& state, CBlockIndex* pindex,
@@ -2811,7 +2808,7 @@ bool Chainstate::FlushStateToDisk(
     }
     if (full_flush_completed) {
         if (m_chainman.m_options.signals) {
-            m_chainman.m_options.signals->ChainStateFlushed(this->GetRole(), GetLocator(m_last_flushed_block));
+            m_chainman.m_options.signals->ChainStateFlushed(GetLocator(m_last_flushed_block));
         }
 
         if (!m_chainman.m_interrupt && ShouldCompactChainstate(m_chainman.IsInitialBlockDownload())) {
@@ -3340,10 +3337,6 @@ bool Chainstate::ActivateBestChain(BlockValidationState& state, std::shared_ptr<
 
                 bool fInvalidFound = false;
                 std::shared_ptr<const CBlock> nullBlockPtr;
-                // BlockConnected signals must be sent for the original role;
-                // in case snapshot validation is completed during ActivateBestChainStep, the
-                // result of GetRole() changes from BACKGROUND to NORMAL.
-               const ChainstateRole chainstate_role{this->GetRole()};
                 if (!ActivateBestChainStep(state, *pindexMostWork, pblock && pblock->GetHash() == pindexMostWork->GetBlockHash() ? pblock : nullBlockPtr, fInvalidFound, connected_blocks)) {
                     // A system error occurred
                     return false;
@@ -3358,7 +3351,7 @@ bool Chainstate::ActivateBestChain(BlockValidationState& state, std::shared_ptr<
 
                 for (auto& [index, block] : std::move(connected_blocks)) {
                     if (m_chainman.m_options.signals) {
-                        m_chainman.m_options.signals->BlockConnected(chainstate_role, std::move(Assert(block)), Assert(index));
+                        m_chainman.m_options.signals->BlockConnected(std::move(Assert(block)), Assert(index));
                     }
                 }
             } while (!m_chain.Tip() || (starting_tip && CBlockIndexWorkComparator()(m_chain.Tip(), starting_tip)));
@@ -6435,11 +6428,6 @@ bool IsBIP30Unspendable(const uint256& block_hash, int block_height)
 {
     return (block_height==91722 && block_hash == uint256{"00000000000271a2dc26e7667f8419f2e15416dc6955e5a6c6cdf3f2574dd08e"}) ||
            (block_height==91812 && block_hash == uint256{"00000000000af0aed4792b1acee3d966af36cf5def14935db8de83d6f9306f2f"});
-}
-
-ChainstateRole Chainstate::GetRole() const
-{
-    return ChainstateRole{.validated = m_assumeutxo == Assumeutxo::VALIDATED};
 }
 
 void ChainstateManager::RecalculateBestHeader()
