@@ -1157,6 +1157,14 @@ public:
         abort();
     }
 
+    //! Return the base block of the snapshot the current chainstate is built
+    //! on while that snapshot is not yet validated, otherwise nullptr.
+    const CBlockIndex* AssumedValidBase() const EXCLUSIVE_LOCKS_REQUIRED(GetMutex())
+    {
+        const Chainstate& cs{CurrentChainstate()};
+        return cs.m_assumeutxo == Assumeutxo::UNVALIDATED ? Assert(cs.SnapshotBase()) : nullptr;
+    }
+
     //! Remove a chainstate.
     std::unique_ptr<Chainstate> RemoveChainstate(Chainstate& chainstate) EXCLUSIVE_LOCKS_REQUIRED(GetMutex())
     {

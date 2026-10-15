@@ -51,6 +51,7 @@ BOOST_FIXTURE_TEST_CASE(chainstatemanager, TestChain100Setup)
     Chainstate& c1 = manager.ActiveChainstate();
 
     BOOST_CHECK(WITH_LOCK(::cs_main, return !manager.CurrentChainstate().m_from_snapshot_blockhash));
+    BOOST_CHECK(!WITH_LOCK(::cs_main, return manager.AssumedValidBase()));
     {
         LOCK(manager.GetMutex());
         BOOST_CHECK_EQUAL(manager.m_chainstates.size(), 1);
@@ -92,6 +93,7 @@ BOOST_FIXTURE_TEST_CASE(chainstatemanager, TestChain100Setup)
 
     BOOST_CHECK_EQUAL(WITH_LOCK(::cs_main, return *manager.CurrentChainstate().m_from_snapshot_blockhash), snapshot_blockhash);
     BOOST_CHECK(WITH_LOCK(::cs_main, return manager.CurrentChainstate().m_assumeutxo == Assumeutxo::UNVALIDATED));
+    BOOST_CHECK_EQUAL(WITH_LOCK(::cs_main, return manager.AssumedValidBase()->GetBlockHash()), snapshot_blockhash);
     BOOST_CHECK_EQUAL(&c2, &manager.ActiveChainstate());
     BOOST_CHECK(&c1 != &manager.ActiveChainstate());
     {
@@ -813,6 +815,7 @@ BOOST_FIXTURE_TEST_CASE(chainstatemanager_snapshot_completion, SnapshotTestSetup
     BOOST_CHECK_EQUAL(snapshot_chainstate_dir, gArgs.GetDataDirNet() / "chainstate_snapshot");
 
     BOOST_CHECK(WITH_LOCK(::cs_main, return chainman.CurrentChainstate().m_from_snapshot_blockhash));
+    BOOST_CHECK_EQUAL(WITH_LOCK(::cs_main, return chainman.AssumedValidBase()), WITH_LOCK(::cs_main, return active_cs.SnapshotBase()));
     const uint256 snapshot_tip_hash = WITH_LOCK(chainman.GetMutex(),
         return chainman.ActiveTip()->GetBlockHash());
 
@@ -821,6 +824,7 @@ BOOST_FIXTURE_TEST_CASE(chainstatemanager_snapshot_completion, SnapshotTestSetup
 
     BOOST_CHECK(WITH_LOCK(::cs_main, return chainman.CurrentChainstate().m_assumeutxo == Assumeutxo::VALIDATED));
     BOOST_CHECK(WITH_LOCK(::cs_main, return chainman.CurrentChainstate().m_from_snapshot_blockhash));
+    BOOST_CHECK(!WITH_LOCK(::cs_main, return chainman.AssumedValidBase()));
     BOOST_CHECK_EQUAL(WITH_LOCK(chainman.GetMutex(), return chainman.HistoricalChainstate()), nullptr);
 
     // Cache should have been rebalanced and reallocated to the "only" remaining
@@ -911,6 +915,7 @@ BOOST_FIXTURE_TEST_CASE(chainstatemanager_snapshot_completion_hash_mismatch, Sna
         BOOST_CHECK(!chainman.m_chainstates[0]->SnapshotBase());
         BOOST_CHECK(chainman.m_chainstates[1]->m_assumeutxo == Assumeutxo::INVALID);
         BOOST_CHECK(chainman.m_chainstates[1]->SnapshotBase());
+        BOOST_CHECK(!chainman.AssumedValidBase());
     }
 
     fs::path snapshot_invalid_dir = gArgs.GetDataDirNet() / "chainstate_snapshot_INVALID";
