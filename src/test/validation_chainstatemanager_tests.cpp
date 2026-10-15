@@ -4,6 +4,7 @@
 //
 #include <chainparams.h>
 #include <consensus/validation.h>
+#include <interfaces/chain.h>
 #include <kernel/disconnected_transactions.h>
 #include <node/block_template_manager.h>
 #include <node/chainstatemanager_args.h>
@@ -816,6 +817,7 @@ BOOST_FIXTURE_TEST_CASE(chainstatemanager_snapshot_completion, SnapshotTestSetup
 
     BOOST_CHECK(WITH_LOCK(::cs_main, return chainman.CurrentChainstate().m_from_snapshot_blockhash));
     BOOST_CHECK_EQUAL(WITH_LOCK(::cs_main, return chainman.AssumedValidBase()), WITH_LOCK(::cs_main, return active_cs.SnapshotBase()));
+    BOOST_CHECK(m_node.chain->hasAssumedValidChain());
     const uint256 snapshot_tip_hash = WITH_LOCK(chainman.GetMutex(),
         return chainman.ActiveTip()->GetBlockHash());
 
@@ -825,6 +827,7 @@ BOOST_FIXTURE_TEST_CASE(chainstatemanager_snapshot_completion, SnapshotTestSetup
     BOOST_CHECK(WITH_LOCK(::cs_main, return chainman.CurrentChainstate().m_assumeutxo == Assumeutxo::VALIDATED));
     BOOST_CHECK(WITH_LOCK(::cs_main, return chainman.CurrentChainstate().m_from_snapshot_blockhash));
     BOOST_CHECK(!WITH_LOCK(::cs_main, return chainman.AssumedValidBase()));
+    BOOST_CHECK(!m_node.chain->hasAssumedValidChain());
     BOOST_CHECK_EQUAL(WITH_LOCK(chainman.GetMutex(), return chainman.HistoricalChainstate()), nullptr);
 
     // Cache should have been rebalanced and reallocated to the "only" remaining

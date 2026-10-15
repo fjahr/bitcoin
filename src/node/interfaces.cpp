@@ -862,7 +862,7 @@ public:
     bool hasAssumedValidChain() override
     {
         LOCK(::cs_main);
-        return bool{chainman().CurrentChainstate().m_from_snapshot_blockhash};
+        return chainman().AssumedValidBase() != nullptr;
     }
 
     NodeContext* context() override { return &m_node; }
