@@ -145,9 +145,19 @@ struct CBlockIndexHeightOnlyComparator {
     bool operator()(const CBlockIndex* pa, const CBlockIndex* pb) const;
 };
 
+/** The number of blocks to keep below the deepest prune lock.
+ *  There is nothing special about this number. It is higher than what we
+ *  expect to see in regular mainnet reorgs, but not so high that it would
+ *  noticeably interfere with the pruning mechanism.
+ * */
+static constexpr int PRUNE_LOCK_BUFFER{10};
+
 struct PruneLockInfo {
     /// Height of earliest block that should be kept and not pruned
     int height_first{std::numeric_limits<int>::max()};
+    /// Height of latest block that should be kept and not pruned. Blocks above
+    /// it may be pruned unless this is the default, which keeps all of them.
+    int height_last{std::numeric_limits<int>::max()};
 };
 
 enum BlockfileType {
@@ -458,6 +468,9 @@ public:
 
     //! Delete a prune lock identified by its name. Returns true if the lock existed.
     bool DeletePruneLock(const std::string& name) EXCLUSIVE_LOCKS_REQUIRED(::cs_main);
+
+    //! Whether a prune lock with a height_last keeps the given block file from being pruned.
+    bool IsPruneLocked(const CBlockFileInfo& info) const EXCLUSIVE_LOCKS_REQUIRED(::cs_main);
 
     /** Open a block file (blk?????.dat) */
     AutoFile OpenBlockFile(const FlatFilePos& pos, bool fReadOnly) const;

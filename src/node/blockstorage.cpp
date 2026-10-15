@@ -317,7 +317,7 @@ void BlockManager::FindFilesToPruneManual(
     int count = 0;
     for (int fileNumber = 0; fileNumber < this->MaxBlockfileNum(); fileNumber++) {
         const auto& fileinfo = m_blockfile_info[fileNumber];
-        if (fileinfo.nSize == 0 || fileinfo.nHeightLast > (unsigned)last_block_can_prune || fileinfo.nHeightFirst < (unsigned)min_block_to_prune) {
+        if (fileinfo.nSize == 0 || fileinfo.nHeightLast > (unsigned)last_block_can_prune || fileinfo.nHeightFirst < (unsigned)min_block_to_prune || IsPruneLocked(fileinfo)) {
             continue;
         }
 
@@ -392,7 +392,7 @@ void BlockManager::FindFilesToPrune(
 
             // don't prune files that could have a block that's not within the allowable
             // prune range for the chain being pruned.
-            if (fileinfo.nHeightLast > (unsigned)last_block_can_prune || fileinfo.nHeightFirst < (unsigned)min_block_to_prune) {
+            if (fileinfo.nHeightLast > (unsigned)last_block_can_prune || fileinfo.nHeightFirst < (unsigned)min_block_to_prune || IsPruneLocked(fileinfo)) {
                 continue;
             }
 
@@ -419,6 +419,18 @@ bool BlockManager::DeletePruneLock(const std::string& name)
 {
     AssertLockHeld(::cs_main);
     return m_prune_locks.erase(name) > 0;
+}
+
+bool BlockManager::IsPruneLocked(const CBlockFileInfo& info) const
+{
+    AssertLockHeld(::cs_main);
+    return std::ranges::any_of(m_prune_locks, [&](const auto& prune_lock) {
+        const PruneLockInfo& lock{prune_lock.second};
+        // Locks without a height_last are applied by limiting the prune height instead.
+        if (lock.height_last == std::numeric_limits<int>::max()) return false;
+        return int64_t{info.nHeightFirst} <= lock.height_last &&
+               int64_t{info.nHeightLast} >= int64_t{lock.height_first} - PRUNE_LOCK_BUFFER;
+    });
 }
 
 CBlockIndex* BlockManager::InsertBlockIndex(const uint256& hash)

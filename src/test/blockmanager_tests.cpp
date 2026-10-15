@@ -324,4 +324,31 @@ BOOST_FIXTURE_TEST_CASE(prune_lock_update_and_delete, TestingSetup)
     BOOST_CHECK(!blockman.DeletePruneLock("nonexistent"));
 }
 
+BOOST_FIXTURE_TEST_CASE(prune_lock_height_last, TestingSetup)
+{
+    LOCK(::cs_main);
+    auto& blockman{Assert(m_node.chainman)->m_blockman};
+    const auto file_with_heights{[](uint32_t first, uint32_t last) {
+        CBlockFileInfo info;
+        info.nHeightFirst = first;
+        info.nHeightLast = last;
+        return info;
+    }};
+
+    // Locks without a height_last limit the prune height instead of locking files.
+    blockman.UpdatePruneLock("open", node::PruneLockInfo{.height_first = 100});
+    BOOST_CHECK(!blockman.IsPruneLocked(file_with_heights(150, 300)));
+
+    blockman.UpdatePruneLock("bounded", node::PruneLockInfo{.height_first = 100, .height_last = 200});
+    BOOST_CHECK(blockman.IsPruneLocked(file_with_heights(150, 160)));
+    BOOST_CHECK(blockman.IsPruneLocked(file_with_heights(200, 300)));
+    BOOST_CHECK(blockman.IsPruneLocked(file_with_heights(50, 300)));
+    BOOST_CHECK(blockman.IsPruneLocked(file_with_heights(50, 100 - node::PRUNE_LOCK_BUFFER)));
+    BOOST_CHECK(!blockman.IsPruneLocked(file_with_heights(50, 100 - node::PRUNE_LOCK_BUFFER - 1)));
+    BOOST_CHECK(!blockman.IsPruneLocked(file_with_heights(201, 300)));
+
+    BOOST_CHECK(blockman.DeletePruneLock("bounded"));
+    BOOST_CHECK(!blockman.IsPruneLocked(file_with_heights(150, 160)));
+}
+
 BOOST_AUTO_TEST_SUITE_END()
