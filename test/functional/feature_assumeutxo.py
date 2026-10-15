@@ -10,6 +10,7 @@ The assumeutxo value generated and used here is committed to in
 `CRegTestParams::m_assumeutxo_data` in `src/kernel/chainparams.cpp`.
 """
 import contextlib
+import shutil
 
 from dataclasses import dataclass
 from test_framework.blocktools import (
@@ -262,6 +263,29 @@ class AssumeutxoTest(BitcoinTestFramework):
         self.sync_blocks(nodes=(n0, n3))
         self.wait_until(lambda: len(n3.getchainstates()['chainstates']) == 1)
 
+    def test_invalid_snapshot_recovery(self, dump_output_path):
+        self.log.info("Test that the coins validating a snapshot replace it once it turned out to be invalid")
+        n3 = self.nodes[3]
+        assert_equal(n3.getblockcount(), START_HEIGHT)
+        n3.loadtxoutset(dump_output_path)
+        assert_equal(n3.getblockcount(), SNAPSHOT_BASE_HEIGHT)
+
+        # Upon a hash mismatch, the coins validating the snapshot are marked to
+        # replace the chainstate on the next startup.
+        self.stop_node(3)
+        chain_path = n3.chain_path
+        (chain_path / "chainstate_verify").rename(chain_path / "chainstate_fallback")
+        self.start_node(3, extra_args=self.extra_args[3])
+
+        chainstate, = n3.getchainstates()["chainstates"]
+        assert_equal(chainstate["blocks"], START_HEIGHT)
+        assert_equal(chainstate["validated"], True)
+        assert "snapshot_blockhash" not in chainstate
+        assert not (chain_path / "chainstate_fallback").exists()
+        # The invalid snapshot chainstate is kept for diagnosis.
+        assert (chain_path / "chainstate_snapshot_INVALID" / "unvalidated_base_blockhash").exists()
+        shutil.rmtree(chain_path / "chainstate_snapshot_INVALID")
+
     def test_snapshot_not_on_most_work_chain(self, dump_output_path):
         self.log.info("Test snapshot is not loaded when the node knows the headers of another chain with more work.")
         node0 = self.nodes[0]
@@ -370,6 +394,15 @@ class AssumeutxoTest(BitcoinTestFramework):
 
         self.log.info("Snapshot node should reorg to the most-work chain without the snapshot block")
         self.sync_blocks(nodes=(snapshot_node, forking_node))
+
+    def convert_to_legacy_layout(self, node):
+        """Convert the chainstate directories of a stopped node that validates
+        a snapshot to the layout of older versions, which kept a separate
+        chainstate for the snapshot"""
+        chain_path = node.chain_path
+        (chain_path / "chainstate").rename(chain_path / "chainstate_snapshot")
+        (chain_path / "chainstate_verify").rename(chain_path / "chainstate")
+        (chain_path / "chainstate_snapshot" / "unvalidated_base_blockhash").rename(chain_path / "chainstate_snapshot" / "base_blockhash")
 
     def assert_only_network_limited_service(self, node):
         node_services = node.getnetworkinfo()['localservicesnames']
@@ -756,8 +789,15 @@ class AssumeutxoTest(BitcoinTestFramework):
         assert_raises_rpc_error(-32603, msg, n2.loadtxoutset, dump_output['path'])
 
         # Upon restart, the node must stay in 'limited' mode until the background
-        # chain sync completes.
-        self.restart_node(2, extra_args=self.extra_args[2])
+        # chain sync completes. The directories of older versions are converted
+        # on startup.
+        self.stop_node(2)
+        self.convert_to_legacy_layout(n2)
+        self.start_node(2, extra_args=self.extra_args[2])
+        assert not (n2.chain_path / "chainstate_snapshot").exists()
+        normal, snapshot = n2.getchainstates()['chainstates']
+        assert_equal(normal['blocks'], START_HEIGHT)
+        assert_equal(snapshot['snapshot_blockhash'], dump_output['base_hash'])
         self.assert_only_network_limited_service(n2)
 
         self.connect_nodes(0, 2)
@@ -803,6 +843,7 @@ class AssumeutxoTest(BitcoinTestFramework):
         self.connect_nodes(0, 2)
         self.wait_until(lambda: n2.getblockcount() == FINAL_HEIGHT)
 
+        self.test_invalid_snapshot_recovery(dump_output['path'])
         self.test_snapshot_in_a_divergent_chain(dump_output['path'])
 
         # The following test cleans node2 and node3 chain directories.
