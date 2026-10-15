@@ -50,11 +50,7 @@ BOOST_FIXTURE_TEST_CASE(chainstatemanager, TestChain100Setup)
     BOOST_CHECK(WITH_LOCK(::cs_main, return !manager.CurrentChainstate().m_from_snapshot_blockhash));
     BOOST_CHECK(!WITH_LOCK(::cs_main, return manager.AssumedValidBase()));
     BOOST_CHECK(!WITH_LOCK(::cs_main, return manager.GetHistoricalBlockRange()));
-    {
-        LOCK(manager.GetMutex());
-        BOOST_CHECK_EQUAL(manager.m_chainstates.size(), 1);
-        BOOST_CHECK_EQUAL(manager.m_chainstates[0].get(), &c1);
-    }
+    BOOST_CHECK_EQUAL(WITH_LOCK(manager.GetMutex(), return &manager.CurrentChainstate()), &c1);
 
     // Get to a valid assumeutxo tip (per chainparams);
     mineBlocks(10);
@@ -67,7 +63,6 @@ BOOST_FIXTURE_TEST_CASE(chainstatemanager, TestChain100Setup)
         BOOST_CHECK_EQUAL(*manager.CurrentChainstate().m_from_snapshot_blockhash, snapshot_base->GetBlockHash());
         BOOST_CHECK(manager.CurrentChainstate().m_assumeutxo == Assumeutxo::UNVALIDATED);
         BOOST_CHECK_EQUAL(manager.AssumedValidBase(), snapshot_base);
-        BOOST_CHECK_EQUAL(manager.m_chainstates.size(), 1);
         BOOST_CHECK_EQUAL(&manager.ActiveChainstate(), &c1);
         BOOST_CHECK_EQUAL(manager.ActiveTip(), snapshot_base);
 
@@ -360,9 +355,7 @@ struct SnapshotTestSetup : TestChain100Setup {
         {
             LOCK(chainman.GetMutex());
             chainman.ResetHistoricalCoins();
-            for (const auto& cs : chainman.m_chainstates) {
-                if (cs->CanFlushToDisk()) cs->ForceFlushStateToDisk();
-            }
+            if (chainman.CurrentChainstate().CanFlushToDisk()) chainman.CurrentChainstate().ForceFlushStateToDisk();
         }
         {
             // Process all callbacks referring to the old manager before wiping it.
@@ -370,7 +363,7 @@ struct SnapshotTestSetup : TestChain100Setup {
             m_node.block_template_manager.reset();
             LOCK(::cs_main);
             chainman.ResetChainstates();
-            BOOST_CHECK_EQUAL(chainman.m_chainstates.size(), 0);
+            BOOST_CHECK(!chainman.m_chainstate);
             m_node.notifications = std::make_unique<KernelNotifications>(Assert(m_node.shutdown_request), m_node.exit_status, *Assert(m_node.warnings));
             const ChainstateManager::Options chainman_opts{
                 .chainparams = ::Params(),
@@ -682,7 +675,6 @@ BOOST_FIXTURE_TEST_CASE(chainstatemanager_snapshot_init, SnapshotTestSetup)
 
     {
         LOCK(chainman_restarted.GetMutex());
-        BOOST_CHECK_EQUAL(chainman_restarted.m_chainstates.size(), 1);
         BOOST_CHECK_EQUAL(*chainman_restarted.CurrentChainstate().m_from_snapshot_blockhash, snapshot_blockhash);
         BOOST_CHECK(chainman_restarted.CurrentChainstate().m_assumeutxo == Assumeutxo::UNVALIDATED);
         BOOST_CHECK_EQUAL(chainman_restarted.ActiveTip()->GetBlockHash(), snapshot_blockhash);
@@ -763,7 +755,6 @@ BOOST_FIXTURE_TEST_CASE(chainstatemanager_snapshot_completion, SnapshotTestSetup
 
     {
         LOCK(chainman_restarted.GetMutex());
-        BOOST_CHECK_EQUAL(chainman_restarted.m_chainstates.size(), 1);
         BOOST_CHECK(!chainman_restarted.CurrentChainstate().m_from_snapshot_blockhash);
         BOOST_CHECK(active_cs2.m_coinstip_cache_size_bytes > tip_cache_before_complete);
         BOOST_CHECK(active_cs2.m_coinsdb_cache_size_bytes > db_cache_before_complete);
@@ -808,7 +799,6 @@ BOOST_FIXTURE_TEST_CASE(chainstatemanager_snapshot_completion_hash_mismatch, Sna
 
     {
         LOCK(chainman.GetMutex());
-        BOOST_CHECK_EQUAL(chainman.m_chainstates.size(), 1);
         BOOST_CHECK(chainman.CurrentChainstate().m_assumeutxo == Assumeutxo::INVALID);
         BOOST_CHECK(chainman.CurrentChainstate().SnapshotBase());
         BOOST_CHECK(!chainman.AssumedValidBase());
@@ -835,7 +825,6 @@ BOOST_FIXTURE_TEST_CASE(chainstatemanager_snapshot_completion_hash_mismatch, Sna
 
     {
         LOCK(::cs_main);
-        BOOST_CHECK_EQUAL(chainman_restarted.m_chainstates.size(), 1);
         BOOST_CHECK(!chainman_restarted.CurrentChainstate().m_from_snapshot_blockhash);
         BOOST_CHECK_EQUAL(chainman_restarted.ActiveHeight(), 210);
     }
@@ -873,7 +862,6 @@ BOOST_FIXTURE_TEST_CASE(chainstatemanager_snapshot_dir_recovery, SnapshotTestSet
         BOOST_CHECK(fs::exists(historical_dir));
         BOOST_CHECK(!fs::exists(snapshot_dir));
         LOCK(::cs_main);
-        BOOST_CHECK_EQUAL(chainman.m_chainstates.size(), 1);
         BOOST_CHECK_EQUAL(*chainman.CurrentChainstate().m_from_snapshot_blockhash, snapshot_blockhash);
         BOOST_CHECK_EQUAL(chainman.ActiveHeight(), 210);
         BOOST_CHECK_EQUAL(chainman.GetHistoricalBlockRange()->first->nHeight, 110);

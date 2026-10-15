@@ -566,15 +566,6 @@ protected:
     //! Cached result of LookupBlockIndex(*m_from_snapshot_blockhash)
     mutable const CBlockIndex* m_cached_snapshot_base GUARDED_BY(::cs_main){nullptr};
 
-    //! Target block for this chainstate. If this is not set, chainstate will
-    //! target the most-work, valid block. If this is set, ChainstateManager
-    //! considers this a "historical" chainstate since it will only contain old
-    //! blocks up to the target block, not newer blocks.
-    std::optional<uint256> m_target_blockhash GUARDED_BY(::cs_main);
-
-    //! Cached result of LookupBlockIndex(*m_target_blockhash)
-    mutable const CBlockIndex* m_cached_target_block GUARDED_BY(::cs_main){nullptr};
-
     std::optional<const char*> m_last_script_check_reason_logged GUARDED_BY(::cs_main){};
 
 public:
@@ -641,45 +632,12 @@ public:
      */
     std::optional<uint256> m_from_snapshot_blockhash GUARDED_BY(::cs_main);
 
-    //! Hash of the UTXO set at the target block, computed when the chainstate
-    //! reaches the target block, and null before then.
-    std::optional<AssumeutxoHash> m_target_utxohash GUARDED_BY(::cs_main);
-
     /**
      * The base of the snapshot this chainstate was created from.
      *
      * nullptr if this chainstate was not created from a snapshot.
      */
     const CBlockIndex* SnapshotBase() const EXCLUSIVE_LOCKS_REQUIRED(::cs_main);
-
-    //! Return target block which chainstate tip is expected to reach, if this
-    //! is a historic chainstate being used to validate a snapshot, or null if
-    //! chainstate targets the most-work block. Requires the block index to be
-    //! loaded, so prefer TargetBlockHash() when the block itself is not needed.
-    const CBlockIndex* TargetBlock() const EXCLUSIVE_LOCKS_REQUIRED(::cs_main);
-    //! Return hash of the target block, or nullopt if chainstate targets the
-    //! most-work block. Unlike TargetBlock(), does not require the block index
-    //! to be loaded.
-    std::optional<uint256> TargetBlockHash() const EXCLUSIVE_LOCKS_REQUIRED(::cs_main)
-    {
-        AssertLockHeld(::cs_main);
-        return m_target_blockhash;
-    }
-    //! Set target block for this chainstate. If null, chainstate will target
-    //! the most-work valid block. If non-null chainstate will be a historic
-    //! chainstate and target the specified block.
-    void SetTargetBlock(CBlockIndex* block) EXCLUSIVE_LOCKS_REQUIRED(::cs_main);
-    //! Set target block for this chainstate using just a block hash. Useful
-    //! when the block database has not been loaded yet.
-    void SetTargetBlockHash(uint256 block_hash) EXCLUSIVE_LOCKS_REQUIRED(::cs_main);
-
-    //! Return true if chainstate reached target block.
-    bool ReachedTarget() const EXCLUSIVE_LOCKS_REQUIRED(::cs_main)
-    {
-        const CBlockIndex* target_block{TargetBlock()};
-        assert(!target_block || target_block->GetAncestor(m_chain.Height()) == m_chain.Tip());
-        return target_block && target_block == m_chain.Tip();
-    }
 
     /**
      * The set of all CBlockIndex entries that have as much work as our current
@@ -919,24 +877,18 @@ enum class SnapshotCompletionResult {
 };
 
 /**
- * Interface for managing multiple \ref Chainstate objects, where each
- * chainstate is associated with chainstate* subdirectory in the data directory
- * and contains a database of UTXOs existing at a different point in history.
- * (See \ref Chainstate class for more information.)
+ * Interface for managing the \ref Chainstate, which contains the UTXO set of
+ * the chain tip if syncing is completed, or the UTXO set of the most recent
+ * validated block if the initial sync is still in progress. (See \ref
+ * Chainstate class for more information.)
  *
- * Normally there is exactly one Chainstate, which contains the UTXO set of
- * chain tip if syncing is completed, or the UTXO set the most recent validated
- * block if the initial sync is still in progress.
- *
- * However, if an assumeutxo snapshot is loaded before syncing is completed,
- * there will be two chainstates. The original fully validated chainstate will
- * continue to exist and download new blocks in the background. But the new
- * snapshot which is loaded will become a second chainstate. The second
- * chainstate will be used as the chain tip for the wallet and RPCs even though
- * it is only assumed to be valid. When the initial chainstate catches up to the
- * snapshot height and confirms that the assumeutxo snapshot is actually valid,
- * the second chainstate will be marked validated and become the only chainstate
- * again.
+ * If an assumeutxo snapshot is loaded before syncing is completed, the
+ * snapshot replaces the UTXO set of the chainstate, which is used as the chain
+ * tip for the wallet and RPCs even though it is only assumed to be valid. The
+ * previous UTXO set is kept in a separate coins database, the blocks leading up
+ * to the snapshot are connected to it in the background (see
+ * node::HistoricalReplayVerifier), and once it reaches the snapshot base, its
+ * hash confirms that the snapshot is actually valid.
  */
 class ChainstateManager
 {
@@ -1134,17 +1086,16 @@ public:
     //!                                     is based on, if not validated yet
     Chainstate& InitializeChainstate(CTxMemPool* mempool, std::optional<uint256> from_snapshot_blockhash = std::nullopt) EXCLUSIVE_LOCKS_REQUIRED(::cs_main);
 
-    //! Construct and activate a Chainstate on the basis of UTXO snapshot data.
+    //! Base the chainstate on UTXO snapshot data.
     //!
     //! Steps:
     //!
-    //! - Initialize an unused Chainstate.
-    //! - Load its `CoinsViews` contents from `coins_file`.
+    //! - Load a separate `CoinsViews` from `coins_file`.
     //! - Verify that the hash of the resulting coinsdb matches the expected hash
     //!   per assumeutxo chain parameters.
-    //! - Wait for our headers chain to include the base block of the snapshot.
-    //! - "Fast forward" the tip of the new chainstate to the base of the snapshot.
-    //! - Construct the new Chainstate and add it to m_chainstates.
+    //! - Replace the coins of the chainstate with it, keeping the previous ones
+    //!   to validate the snapshot in the background.
+    //! - "Fast forward" the tip of the chainstate to the base of the snapshot.
     [[nodiscard]] util::Result<CBlockIndex*> ActivateSnapshot(
         AutoFile& coins_file, const node::SnapshotMetadata& metadata, bool in_memory);
 
@@ -1173,33 +1124,10 @@ public:
     //! if it does happen, it is a fatal error.
     SnapshotCompletionResult ValidateSnapshot() LOCKS_EXCLUDED(::cs_main);
 
-    //! Return current chainstate targeting the most-work, network tip.
+    //! Return the chainstate.
     Chainstate& CurrentChainstate() const EXCLUSIVE_LOCKS_REQUIRED(GetMutex())
     {
-        for (auto& cs : m_chainstates) {
-            if (cs && !cs->TargetBlockHash()) return *cs;
-        }
-        abort();
-    }
-
-    //! Return historical chainstate targeting a specific block, if any.
-    Chainstate* HistoricalChainstate() const EXCLUSIVE_LOCKS_REQUIRED(GetMutex())
-    {
-        for (auto& cs : m_chainstates) {
-            if (cs && cs->m_assumeutxo != Assumeutxo::INVALID && cs->TargetBlockHash() && !cs->m_target_utxohash) return cs.get();
-        }
-        return nullptr;
-    }
-
-    //! Return fully validated chainstate that should be used for indexing, to
-    //! support indexes that need to index blocks in order and can't start from
-    //! the snapshot block.
-    Chainstate& ValidatedChainstate() const EXCLUSIVE_LOCKS_REQUIRED(GetMutex())
-    {
-        for (auto* cs : {&CurrentChainstate(), HistoricalChainstate()}) {
-            if (cs && cs->m_assumeutxo == Assumeutxo::VALIDATED) return *cs;
-        }
-        abort();
+        return *Assert(m_chainstate);
     }
 
     //! Return the base block of the snapshot the current chainstate is built
@@ -1208,18 +1136,6 @@ public:
     {
         const Chainstate& cs{CurrentChainstate()};
         return cs.m_assumeutxo == Assumeutxo::UNVALIDATED ? Assert(cs.SnapshotBase()) : nullptr;
-    }
-
-    //! Remove a chainstate.
-    std::unique_ptr<Chainstate> RemoveChainstate(Chainstate& chainstate) EXCLUSIVE_LOCKS_REQUIRED(GetMutex())
-    {
-        auto it{std::find_if(m_chainstates.begin(), m_chainstates.end(), [&](auto& cs) { return cs.get() == &chainstate; })};
-        if (it != m_chainstates.end()) {
-            auto ret{std::move(*it)};
-            m_chainstates.erase(it);
-            return ret;
-        }
-        return nullptr;
     }
 
     //! Alternatives to CurrentChainstate() used by older code to query latest
@@ -1443,7 +1359,7 @@ public:
     //! not validated yet, this is the last block validated in the background.
     const CBlockIndex* ValidatedTip() const EXCLUSIVE_LOCKS_REQUIRED(::cs_main);
 
-    //! Call ActivateBestChain() on every chainstate.
+    //! Call ActivateBestChain() on the chainstate.
     util::Result<void> ActivateBestChains() LOCKS_EXCLUDED(::cs_main);
 
     //! If, due to invalidation / reconsideration of blocks, the previous
@@ -1459,14 +1375,14 @@ public:
 
     ~ChainstateManager();
 
-    //! List of chainstates. Note: in general, it is not safe to delete
-    //! Chainstate objects once they are added to this list because there is no
-    //! mutex that can be locked to prevent Chainstate pointers from being used
-    //! while they are deleted. (cs_main doesn't work because it is too narrow
-    //! and is released in the middle of Chainstate::ActivateBestChain to let
-    //! notifications be processed. m_chainstate_mutex doesn't work because it
-    //! is not locked at other times when the chainstate is in use.)
-    std::vector<std::unique_ptr<Chainstate>> m_chainstates GUARDED_BY(::cs_main);
+    //! The chainstate. Note: in general, it is not safe to delete it once it is
+    //! initialized because there is no mutex that can be locked to prevent
+    //! Chainstate pointers from being used while it is deleted. (cs_main
+    //! doesn't work because it is too narrow and is released in the middle of
+    //! Chainstate::ActivateBestChain to let notifications be processed.
+    //! m_chainstate_mutex doesn't work because it is not locked at other times
+    //! when the chainstate is in use.)
+    std::unique_ptr<Chainstate> m_chainstate GUARDED_BY(::cs_main);
 };
 
 /** Deployment* info via ChainstateManager */
