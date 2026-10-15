@@ -871,8 +871,6 @@ protected:
     void InvalidBlockFound(CBlockIndex* pindex, const BlockValidationState& state) EXCLUSIVE_LOCKS_REQUIRED(cs_main);
     CBlockIndex* FindMostWorkChain() EXCLUSIVE_LOCKS_REQUIRED(cs_main);
 
-    bool RollforwardBlock(const CBlockIndex* pindex, CCoinsViewCache& inputs) EXCLUSIVE_LOCKS_REQUIRED(cs_main);
-
     void CheckForkWarningConditions() EXCLUSIVE_LOCKS_REQUIRED(cs_main);
     void InvalidChainFound(CBlockIndex* pindexNew) EXCLUSIVE_LOCKS_REQUIRED(cs_main);
 
@@ -980,6 +978,8 @@ private:
         CBlockIndex** ppindex,
         bool min_pow_checked) EXCLUSIVE_LOCKS_REQUIRED(cs_main);
     friend Chainstate;
+
+    bool RollforwardBlock(const CBlockIndex* pindex, CCoinsViewCache& inputs) EXCLUSIVE_LOCKS_REQUIRED(cs_main);
 
     /** Most recent headers presync progress update, for rate-limiting. */
     MockableSteadyClock::time_point m_last_presync_update GUARDED_BY(GetMutex()){};
@@ -1334,6 +1334,9 @@ public:
     //! Undo the effects of this block (with given index) on the UTXO set represented by view.
     DisconnectResult DisconnectBlock(const CBlock& block, const CBlockIndex* pindex, CCoinsViewCache& view)
         EXCLUSIVE_LOCKS_REQUIRED(::cs_main);
+
+    //! Replay blocks that aren't fully applied to the coins database.
+    bool ReplayBlocks(CCoinsView& db) EXCLUSIVE_LOCKS_REQUIRED(::cs_main);
 
     /**
      * Try to add a transaction to the memory pool.

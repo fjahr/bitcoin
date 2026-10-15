@@ -4773,7 +4773,7 @@ VerifyDBResult CVerifyDB::VerifyDB(
 }
 
 /** Apply the effects of a block on the utxo cache, ignoring that it may already have been applied. */
-bool Chainstate::RollforwardBlock(const CBlockIndex* pindex, CCoinsViewCache& inputs)
+bool ChainstateManager::RollforwardBlock(const CBlockIndex* pindex, CCoinsViewCache& inputs)
 {
     AssertLockHeld(cs_main);
     // TODO: merge with ConnectBlock
@@ -4798,8 +4798,12 @@ bool Chainstate::RollforwardBlock(const CBlockIndex* pindex, CCoinsViewCache& in
 bool Chainstate::ReplayBlocks()
 {
     LOCK(cs_main);
+    return m_chainman.ReplayBlocks(CoinsDB());
+}
 
-    CCoinsView& db = this->CoinsDB();
+bool ChainstateManager::ReplayBlocks(CCoinsView& db)
+{
+    AssertLockHeld(cs_main);
     CCoinsViewCache cache(&db);
 
     std::vector<uint256> hashHeads = db.GetHeadBlocks();
@@ -4809,7 +4813,7 @@ bool Chainstate::ReplayBlocks()
         return false;
     }
 
-    m_chainman.GetNotifications().progress(_("Replaying blocks…"), 0, false);
+    GetNotifications().progress(_("Replaying blocks…"), 0, false);
     LogInfo("Replaying blocks");
 
     const CBlockIndex* pindexOld = nullptr;  // Old tip during the interrupted flush.
@@ -4870,7 +4874,7 @@ bool Chainstate::ReplayBlocks()
             if (nHeight % 10'000 == 0) {
                 LogInfo("Rolling forward %s (%i)", pindex.GetBlockHash().ToString(), nHeight);
             }
-            m_chainman.GetNotifications().progress(_("Replaying blocks…"), (int)((nHeight - nForkHeight) * 100.0 / (pindexNew->nHeight - nForkHeight)), false);
+            GetNotifications().progress(_("Replaying blocks…"), (int)((nHeight - nForkHeight) * 100.0 / (pindexNew->nHeight - nForkHeight)), false);
             if (!RollforwardBlock(&pindex, cache)) return false;
         }
         LogInfo("Rolled forward to %s", pindexNew->GetBlockHash().ToString());
@@ -4878,7 +4882,7 @@ bool Chainstate::ReplayBlocks()
 
     cache.SetBestBlock(pindexNew->GetBlockHash());
     cache.Flush(/*reallocate_cache=*/false); // local CCoinsViewCache goes out of scope
-    m_chainman.GetNotifications().progress(bilingual_str{}, 100, false);
+    GetNotifications().progress(bilingual_str{}, 100, false);
     return true;
 }
 
