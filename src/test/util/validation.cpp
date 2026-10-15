@@ -49,6 +49,11 @@ void TestChainstateManager::DisableNextWrite()
     }
 }
 
+CCoinsViewCache& TestChainstateManager::HistoricalCoinsTip()
+{
+    return *Assert(Assert(m_historical_coins)->m_cacheview);
+}
+
 void TestChainstateManager::ResetIbd()
 {
     m_cached_is_ibd = true;

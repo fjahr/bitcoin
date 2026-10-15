@@ -33,6 +33,7 @@
 #include <node/block_template_manager.h>
 #include <node/blockstorage.h>
 #include <node/context.h>
+#include <node/historical_verify.h>
 #include <node/utxo_snapshot.h>
 #include <node/warnings.h>
 #include <policy/feerate.h>
@@ -3581,6 +3582,18 @@ static RPCMethod loadtxoutset()
     // provide the last 288 blocks, but it doesn't hurt to set it.
     node.connman->AddLocalServices(NODE_NETWORK_LIMITED);
 
+    // Restart indexes, so that they index the blocks before the snapshot base
+    // once they are validated in the background.
+    Assert(node.validation_signals)->SyncWithValidationInterfaceQueue();
+    for (auto* index : node.indexes) {
+        index->Interrupt();
+        index->Stop();
+        if (!(index->Init() && index->StartBackgroundSync())) {
+            LogWarning("[snapshot] Failed to restart index %s on snapshot chain", index->GetName());
+        }
+    }
+    if (node.historical_verifier) node.historical_verifier->Start();
+
     CBlockIndex& snapshot_index{*CHECK_NONFATAL(*activation_result)};
 
     UniValue result(UniValue::VOBJ);
@@ -3629,36 +3642,41 @@ return RPCMethod{
 
     ChainstateManager& chainman = EnsureAnyChainman(request.context);
 
-    auto make_chain_data = [&](const Chainstate& cs) EXCLUSIVE_LOCKS_REQUIRED(::cs_main) {
+    auto make_chain_data = [&](const CBlockIndex* tip, size_t coins_db_cache_bytes, size_t coins_tip_cache_bytes,
+                               const std::optional<uint256>& snapshot_blockhash, bool validated) EXCLUSIVE_LOCKS_REQUIRED(::cs_main) {
         AssertLockHeld(::cs_main);
         UniValue data(UniValue::VOBJ);
-        if (!cs.m_chain.Tip()) {
+        if (!tip) {
             return data;
         }
-        const CChain& chain = cs.m_chain;
-        const CBlockIndex* tip = chain.Tip();
 
-        data.pushKV("blocks", chain.Height());
+        data.pushKV("blocks", tip->nHeight);
         data.pushKV("bestblockhash",         tip->GetBlockHash().GetHex());
         data.pushKV("bits", strprintf("%08x", tip->nBits));
         data.pushKV("target", GetTarget(*tip, chainman.GetConsensus().powLimit).GetHex());
         data.pushKV("difficulty", GetDifficulty(*tip));
         data.pushKV("verificationprogress", chainman.GuessVerificationProgress(tip));
-        data.pushKV("coins_db_cache_bytes",  cs.m_coinsdb_cache_size_bytes);
-        data.pushKV("coins_tip_cache_bytes", cs.m_coinstip_cache_size_bytes);
-        if (cs.m_from_snapshot_blockhash) {
-            data.pushKV("snapshot_blockhash", cs.m_from_snapshot_blockhash->ToString());
+        data.pushKV("coins_db_cache_bytes",  coins_db_cache_bytes);
+        data.pushKV("coins_tip_cache_bytes", coins_tip_cache_bytes);
+        if (snapshot_blockhash) {
+            data.pushKV("snapshot_blockhash", snapshot_blockhash->ToString());
         }
-        data.pushKV("validated", cs.m_assumeutxo == Assumeutxo::VALIDATED);
+        data.pushKV("validated", validated);
         return data;
     };
 
     obj.pushKV("headers", chainman.m_best_header ? chainman.m_best_header->nHeight : -1);
     UniValue obj_chainstates{UniValue::VARR};
-    if (const Chainstate * cs{chainman.HistoricalChainstate()}) {
-        obj_chainstates.push_back(make_chain_data(*cs));
+    // The coins validating a snapshot in the background are reported like a
+    // fully validated chainstate.
+    if (const auto historical_blocks{chainman.GetHistoricalBlockRange()}) {
+        const auto [coins_tip_cache_bytes, coins_db_cache_bytes]{*CHECK_NONFATAL(chainman.HistoricalCoinsCacheSizes())};
+        obj_chainstates.push_back(make_chain_data(historical_blocks->first, coins_db_cache_bytes, coins_tip_cache_bytes,
+                                                  /*snapshot_blockhash=*/std::nullopt, /*validated=*/true));
     }
-    obj_chainstates.push_back(make_chain_data(chainman.CurrentChainstate()));
+    const Chainstate& cs{chainman.CurrentChainstate()};
+    obj_chainstates.push_back(make_chain_data(cs.m_chain.Tip(), cs.m_coinsdb_cache_size_bytes, cs.m_coinstip_cache_size_bytes,
+                                              cs.m_from_snapshot_blockhash, cs.m_assumeutxo == Assumeutxo::VALIDATED));
     obj.pushKV("chainstates", std::move(obj_chainstates));
     return obj;
 }

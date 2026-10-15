@@ -1866,11 +1866,7 @@ Chainstate::Chainstate(
 
 fs::path Chainstate::StoragePath() const
 {
-    fs::path path{m_chainman.m_options.datadir / "chainstate"};
-    if (m_from_snapshot_blockhash) {
-        path += node::SNAPSHOT_CHAINSTATE_SUFFIX;
-    }
-    return path;
+    return m_chainman.m_options.datadir / "chainstate";
 }
 
 const CBlockIndex* Chainstate::SnapshotBase() const
@@ -1908,17 +1904,21 @@ void Chainstate::InitCoinsDB(
     bool in_memory,
     bool should_wipe)
 {
-    m_coins_views = std::make_unique<CoinsViews>(
+    m_coins_views = m_chainman.MakeCoinsViews(StoragePath(), cache_size_bytes, in_memory, should_wipe);
+    m_coinsdb_cache_size_bytes = cache_size_bytes;
+}
+
+std::unique_ptr<CoinsViews> ChainstateManager::MakeCoinsViews(fs::path path, size_t cache_size_bytes, bool in_memory, bool should_wipe) const
+{
+    return std::make_unique<CoinsViews>(
         DBParams{
-            .path = StoragePath(),
+            .path = std::move(path),
             .cache_bytes = cache_size_bytes,
             .memory_only = in_memory,
             .wipe_data = should_wipe,
             .obfuscate = true,
-            .options = m_chainman.m_options.coins_db},
-        m_chainman.m_options.coins_view);
-
-    m_coinsdb_cache_size_bytes = cache_size_bytes;
+            .options = m_options.coins_db},
+        m_options.coins_view);
 }
 
 void Chainstate::InitCoinsCache(size_t cache_size_bytes)
@@ -2682,6 +2682,17 @@ CoinsCacheSizeState Chainstate::GetCoinsCacheSizeState()
         m_mempool ? m_mempool->m_opts.max_size_bytes : 0);
 }
 
+static CoinsCacheSizeState GetCoinsCacheSizeState(int64_t cache_size, int64_t total_space)
+{
+    if (cache_size > total_space) {
+        LogInfo("Cache size (%s) exceeds total space (%s)\n", cache_size, total_space);
+        return CoinsCacheSizeState::CRITICAL;
+    } else if (cache_size > LargeCoinsCacheThreshold(total_space)) {
+        return CoinsCacheSizeState::LARGE;
+    }
+    return CoinsCacheSizeState::OK;
+}
+
 CoinsCacheSizeState Chainstate::GetCoinsCacheSizeState(
     size_t max_coins_cache_size_bytes,
     size_t max_mempool_size_bytes)
@@ -2691,14 +2702,7 @@ CoinsCacheSizeState Chainstate::GetCoinsCacheSizeState(
     int64_t cacheSize = CoinsTip().DynamicMemoryUsage();
     int64_t nTotalSpace =
         max_coins_cache_size_bytes + std::max<int64_t>(int64_t(max_mempool_size_bytes) - nMempoolUsage, 0);
-
-    if (cacheSize > nTotalSpace) {
-        LogInfo("Cache size (%s) exceeds total space (%s)\n", cacheSize, nTotalSpace);
-        return CoinsCacheSizeState::CRITICAL;
-    } else if (cacheSize > LargeCoinsCacheThreshold(nTotalSpace)) {
-        return CoinsCacheSizeState::LARGE;
-    }
-    return CoinsCacheSizeState::OK;
+    return ::GetCoinsCacheSizeState(cacheSize, nTotalSpace);
 }
 
 bool Chainstate::FlushStateToDisk(
@@ -3108,18 +3112,6 @@ bool Chainstate::ConnectTip(
              Ticks<MillisecondsDouble>(time_6 - time_1),
              Ticks<SecondsDouble>(m_chainman.time_total),
              Ticks<MillisecondsDouble>(m_chainman.time_total) / m_chainman.num_blocks_total);
-
-    // See if this chainstate has reached a target block and can be used to
-    // validate an assumeutxo snapshot. If it can, hashing the UTXO database
-    // will be slow, and cs_main could remain locked here for several minutes.
-    // If the snapshot is validated, the UTXO hash will be saved to
-    // this->m_target_utxohash, causing HistoricalChainstate() to return null
-    // and this chainstate to no longer be used. ActivateBestChain() will also
-    // stop connecting blocks to this chainstate because this->ReachedTarget()
-    // will be true and this->setBlockIndexCandidates will not have additional
-    // blocks.
-    Chainstate& current_cs{m_chainman.CurrentChainstate()};
-    m_chainman.MaybeValidateSnapshot(*this, current_cs);
 
     connected_blocks.emplace_back(pindexNew, std::move(block_to_connect));
     return true;
@@ -5555,8 +5547,7 @@ double ChainstateManager::GuessVerificationProgress(const CBlockIndex* pindex) c
 double ChainstateManager::GetBackgroundVerificationProgress(const CBlockIndex& pindex) const
 {
     AssertLockHeld(GetMutex());
-    Assert(HistoricalChainstate());
-    auto target_block = HistoricalChainstate()->TargetBlock();
+    const CBlockIndex* target_block{Assert(AssumedValidBase())};
 
     if (pindex.m_chain_tx_count == 0 || target_block->m_chain_tx_count == 0) {
         LogDebug(BCLog::VALIDATION, "[background validation] Block %d has unset m_chain_tx_count. Unable to estimate verification progress.", pindex.nHeight);
@@ -5565,12 +5556,20 @@ double ChainstateManager::GetBackgroundVerificationProgress(const CBlockIndex& p
     return static_cast<double>(pindex.m_chain_tx_count) / static_cast<double>(target_block->m_chain_tx_count);
 }
 
-Chainstate& ChainstateManager::InitializeChainstate(CTxMemPool* mempool)
+Chainstate& ChainstateManager::InitializeChainstate(CTxMemPool* mempool, std::optional<uint256> from_snapshot_blockhash)
 {
     AssertLockHeld(::cs_main);
     assert(m_chainstates.empty());
-    m_chainstates.emplace_back(std::make_unique<Chainstate>(mempool, m_blockman, *this));
+    m_chainstates.emplace_back(std::make_unique<Chainstate>(mempool, m_blockman, *this, from_snapshot_blockhash));
     return *m_chainstates.back();
+}
+
+//! Name of the prune lock that keeps the blocks needed to validate a snapshot.
+static constexpr auto HISTORICAL_PRUNE_LOCK{"assumeutxo"};
+
+static fs::path HistoricalCoinsPath(const fs::path& datadir)
+{
+    return datadir / fs::u8path(strprintf("chainstate%s", node::HISTORICAL_CHAINSTATE_SUFFIX));
 }
 
 [[nodiscard]] static bool DeleteCoinsDBFromDisk(const fs::path db_path, bool is_snapshot)
@@ -5579,14 +5578,10 @@ Chainstate& ChainstateManager::InitializeChainstate(CTxMemPool* mempool)
     AssertLockHeld(::cs_main);
 
     if (is_snapshot) {
-        fs::path base_blockhash_path = db_path / node::SNAPSHOT_BLOCKHASH_FILENAME;
+        fs::path base_blockhash_path = db_path / node::UNVALIDATED_SNAPSHOT_BLOCKHASH_FILENAME;
 
         try {
-            bool existed = fs::remove(base_blockhash_path);
-            if (!existed) {
-                LogWarning("[snapshot] snapshot chainstate dir being removed lacks %s file",
-                          fs::PathToString(node::SNAPSHOT_BLOCKHASH_FILENAME));
-            }
+            fs::remove(base_blockhash_path);
         } catch (const fs::filesystem_error& e) {
             LogWarning("[snapshot] failed to remove file %s: %s\n",
                        fs::PathToString(base_blockhash_path), e.code().message());
@@ -5660,7 +5655,7 @@ util::Result<CBlockIndex*> ChainstateManager::ActivateSnapshot(
     int64_t current_coinsdb_cache_size{0};
     int64_t current_coinstip_cache_size{0};
 
-    // Cache percentages to allocate to each chainstate.
+    // Cache percentages to allocate to the current coins database and the snapshot.
     //
     // These particular percentages don't matter so much since they will only be
     // relevant during snapshot activation; caches are rebalanced at the conclusion of
@@ -5673,7 +5668,7 @@ util::Result<CBlockIndex*> ChainstateManager::ActivateSnapshot(
         LOCK(::cs_main);
         // Resize the coins caches to ensure we're not exceeding memory limits.
         //
-        // Allocate the majority of the cache to the incoming snapshot chainstate, since
+        // Allocate the majority of the cache to the incoming snapshot, since
         // (optimistically) getting to its tip will be the top priority. We'll need to call
         // `MaybeRebalanceCaches()` once we're done with this function to ensure
         // the right allocation (including the possibility that no snapshot was activated
@@ -5689,63 +5684,145 @@ util::Result<CBlockIndex*> ChainstateManager::ActivateSnapshot(
             static_cast<size_t>(current_coinsdb_cache_size * IBD_CACHE_PERC));
     }
 
-    auto snapshot_chainstate = WITH_LOCK(::cs_main,
-        return std::make_unique<Chainstate>(
-            /*mempool=*/nullptr, m_blockman, *this, base_blockhash));
-
+    // Load the snapshot into a separate coins database. Once it is complete,
+    // it replaces the coins database of the current chainstate, which is kept
+    // to validate the snapshot by replaying the blocks up to its base.
+    const fs::path snapshot_path{m_options.datadir / fs::u8path(strprintf("chainstate%s", node::SNAPSHOT_CHAINSTATE_SUFFIX))};
+    std::unique_ptr<CoinsViews> snapshot_coins;
     {
         LOCK(::cs_main);
-        snapshot_chainstate->InitCoinsDB(
+        snapshot_coins = MakeCoinsViews(snapshot_path,
             static_cast<size_t>(current_coinsdb_cache_size * SNAPSHOT_CACHE_PERC),
-            in_memory, /*should_wipe=*/false);
-        snapshot_chainstate->InitCoinsCache(
-            static_cast<size_t>(current_coinstip_cache_size * SNAPSHOT_CACHE_PERC));
+            in_memory, /*should_wipe=*/true);
+        snapshot_coins->InitCache(m_options.prevoutfetch_threads_num);
     }
 
     auto cleanup_bad_snapshot = [&](bilingual_str reason) EXCLUSIVE_LOCKS_REQUIRED(::cs_main) {
         this->MaybeRebalanceCaches();
 
-        // PopulateAndValidateSnapshot can return (in error) before the leveldb datadir
-        // has been created, so only attempt removal if we got that far.
-        if (auto snapshot_datadir = node::FindAssumeutxoChainstateDir(m_options.datadir)) {
-            // We have to destruct leveldb::DB in order to release the db lock, otherwise
-            // DestroyDB() (in DeleteCoinsDBFromDisk()) will fail. See `leveldb::~DBImpl()`.
-            // Destructing the chainstate (and so resetting the coinsviews object) does this.
-            snapshot_chainstate.reset();
-            bool removed = DeleteCoinsDBFromDisk(*snapshot_datadir, /*is_snapshot=*/true);
-            if (!removed) {
-                GetNotifications().fatalError(strprintf(_("Failed to remove snapshot chainstate dir (%s). "
-                    "Manually remove it before restarting.\n"), fs::PathToString(*snapshot_datadir)));
-            }
+        // We have to destruct leveldb::DB in order to release the db lock, otherwise
+        // DestroyDB() (in DeleteCoinsDBFromDisk()) will fail. See `leveldb::~DBImpl()`.
+        snapshot_coins.reset();
+        if (fs::exists(snapshot_path) && !DeleteCoinsDBFromDisk(snapshot_path, /*is_snapshot=*/true)) {
+            GetNotifications().fatalError(strprintf(_("Failed to remove snapshot chainstate dir (%s). "
+                "Manually remove it before restarting.\n"), fs::PathToString(snapshot_path)));
         }
         return util::Error{std::move(reason)};
     };
 
-    if (auto res{this->PopulateAndValidateSnapshot(*snapshot_chainstate, coins_file, metadata)}; !res) {
+    if (auto res{this->PopulateAndValidateSnapshot(*snapshot_coins, static_cast<size_t>(current_coinstip_cache_size * SNAPSHOT_CACHE_PERC), coins_file, metadata)}; !res) {
         LOCK(::cs_main);
         return cleanup_bad_snapshot(Untranslated(strprintf("Population failed: %s", util::ErrorString(res).original)));
     }
 
     LOCK(::cs_main);  // cs_main required for rest of snapshot activation.
+    Chainstate& chainstate{CurrentChainstate()};
 
-    // Do a final check to ensure that the snapshot chainstate is actually a more
-    // work chain than the active chainstate; a user could have loaded a snapshot
+    // Do a final check to ensure that the snapshot is actually a more work
+    // chain than the active chainstate; a user could have loaded a snapshot
     // very late in the IBD process, and we wouldn't want to load a useless chainstate.
-    if (!CBlockIndexWorkComparator()(ActiveTip(), snapshot_chainstate->m_chain.Tip())) {
+    if (!CBlockIndexWorkComparator()(ActiveTip(), snapshot_start_block)) {
         return cleanup_bad_snapshot(Untranslated("work does not exceed active chainstate"));
     }
-    // If not in-memory, persist the base blockhash for use during subsequent
-    // initialization.
-    if (!in_memory) {
-        if (!node::WriteSnapshotBaseBlockhash(*snapshot_chainstate)) {
-            return cleanup_bad_snapshot(Untranslated("could not write base blockhash"));
-        }
+    if (chainstate.GetMempool() && chainstate.GetMempool()->size() > 0) {
+        return cleanup_bad_snapshot(Untranslated("Can't activate a snapshot when mempool not empty"));
+    }
+    // Flush the chainstate, so that its coins database is complete on disk
+    // before it becomes the historical coins database.
+    chainstate.ForceFlushStateToDisk();
+
+    // Persist the base blockhash, which marks the chainstate as based on a
+    // snapshot that is not validated yet. If the activation is interrupted from
+    // here on, LoadAssumeutxoState() completes it on the next startup.
+    if (!in_memory && !node::WriteSnapshotBaseBlockhash(snapshot_path / node::UNVALIDATED_SNAPSHOT_BLOCKHASH_FILENAME, base_blockhash)) {
+        return cleanup_bad_snapshot(Untranslated("could not write base blockhash"));
     }
 
-    Chainstate& chainstate{AddChainstate(std::move(snapshot_chainstate))};
-    m_blockman.m_snapshot_height = Assert(chainstate.SnapshotBase())->nHeight;
+    // Swap the coins databases, so that the snapshot ends up in the regular
+    // chainstate directory. Databases have to be closed to be moved.
+    std::unique_ptr<CoinsViews> historical_coins{std::move(chainstate.m_coins_views)};
+    const size_t historical_coinstip_cache_size{chainstate.m_coinstip_cache_size_bytes};
+    const size_t historical_coinsdb_cache_size{chainstate.m_coinsdb_cache_size_bytes};
+    const size_t snapshot_coinsdb_cache_size{static_cast<size_t>(current_coinsdb_cache_size * SNAPSHOT_CACHE_PERC)};
+    const fs::path chainstate_path{chainstate.StoragePath()};
+    const fs::path historical_path{HistoricalCoinsPath(m_options.datadir)};
+    const auto open_coins{[&](const fs::path& path, size_t cache_size) EXCLUSIVE_LOCKS_REQUIRED(::cs_main) {
+        auto coins{MakeCoinsViews(path, cache_size, /*in_memory=*/false, /*should_wipe=*/false)};
+        coins->InitCache(m_options.prevoutfetch_threads_num);
+        return coins;
+    }};
+    bool moved{false};
+    try {
+        if (!historical_coins->m_dbview.IsMemoryOnly()) {
+            historical_coins.reset();
+            fs::rename(chainstate_path, historical_path);
+            moved = true;
+            historical_coins = open_coins(historical_path, historical_coinsdb_cache_size);
+        }
+        if (!in_memory) {
+            snapshot_coins.reset();
+            fs::rename(snapshot_path, chainstate_path);
+            moved = true;
+            snapshot_coins = open_coins(chainstate_path, snapshot_coinsdb_cache_size);
+        }
+    } catch (const std::exception& e) {
+        LogError("[snapshot] Failed to swap the coins databases: %s", e.what());
+        if (!moved) {
+            // Nothing was moved yet, so the chainstate can be used as before.
+            try {
+                chainstate.m_coins_views = open_coins(chainstate_path, historical_coinsdb_cache_size);
+                return cleanup_bad_snapshot(Untranslated(strprintf("Failed to swap the coins databases: %s", e.what())));
+            } catch (const std::exception& reopen_error) {
+                LogError("[snapshot] Failed to reopen the coins database: %s", reopen_error.what());
+            }
+        }
+        // The directories are in a state LoadAssumeutxoState() resolves on the
+        // next startup. Until then the chainstate keeps using whichever of its
+        // coins databases is still open, if any.
+        chainstate.m_coins_views = std::move(historical_coins);
+        const bilingual_str error{strprintf(_("Failed to activate the snapshot (%s). Restart to complete the activation."), e.what())};
+        GetNotifications().fatalError(error);
+        return util::Error{error};
+    }
+    chainstate.m_coins_views = std::move(snapshot_coins);
+    chainstate.m_coinstip_cache_size_bytes = static_cast<size_t>(current_coinstip_cache_size * SNAPSHOT_CACHE_PERC);
+    chainstate.m_coinsdb_cache_size_bytes = snapshot_coinsdb_cache_size;
+    m_historical_coins = std::move(historical_coins);
+    m_historical_coinstip_cache_size = historical_coinstip_cache_size;
+    m_historical_coinsdb_cache_size = historical_coinsdb_cache_size;
+    m_historical_tip = m_blockman.LookupBlockIndex(m_historical_coins->m_cacheview->GetBestBlock());
+
+    chainstate.m_from_snapshot_blockhash = base_blockhash;
+    chainstate.m_assumeutxo = Assumeutxo::UNVALIDATED;
+    m_blockman.m_snapshot_height = snapshot_start_block->nHeight;
+
+    // Jump to the snapshot base.
+    chainstate.ClearBlockIndexCandidates();
+    chainstate.m_chain.SetTip(*snapshot_start_block);
+    chainstate.m_last_flushed_block = snapshot_start_block;
+    UpdateIBDStatus();
+
+    // Fake various pieces of CBlockIndex state:
+    //
+    // Don't make any modifications to the genesis block since it shouldn't be
+    // necessary, and since the genesis block doesn't have normal flags like
+    // BLOCK_VALID_SCRIPTS set.
+    constexpr int AFTER_GENESIS_START{1};
+    for (int i = AFTER_GENESIS_START; i <= chainstate.m_chain.Height(); ++i) {
+        CBlockIndex* index{chainstate.m_chain[i]};
+
+        // Fake BLOCK_OPT_WITNESS so that Chainstate::NeedsRedownload()
+        // won't ask for -reindex on startup.
+        if (DeploymentActiveAt(*index, *this, Consensus::DEPLOYMENT_SEGWIT)) {
+            index->nStatus |= BLOCK_OPT_WITNESS;
+        }
+        m_blockman.m_dirty_blockindex.insert(index);
+    }
+    snapshot_start_block->m_chain_tx_count = Assert(GetParams().AssumeutxoForBlockhash(base_blockhash))->m_chain_tx_count;
 
     chainstate.PopulateBlockIndexCandidates();
+    UpdateHistoricalPruneLock();
+    chainstate.ForceFlushStateToDisk(/*wipe_cache=*/false);
 
     LogInfo("[snapshot] successfully activated snapshot %s", base_blockhash.ToString());
     LogInfo("[snapshot] (%.2f MB)",
@@ -5780,13 +5857,14 @@ static void SnapshotUTXOHashBreakpoint(const util::SignalInterrupt& interrupt)
 }
 
 util::Result<void> ChainstateManager::PopulateAndValidateSnapshot(
-    Chainstate& snapshot_chainstate,
+    CoinsViews& coins,
+    size_t coinstip_cache_size_bytes,
     AutoFile& coins_file,
     const SnapshotMetadata& metadata)
 {
     // It's okay to release cs_main before we're done using `coins_cache` because we know
-    // that nothing else will be referencing the newly created snapshot_chainstate yet.
-    CCoinsViewCache& coins_cache = *WITH_LOCK(::cs_main, return &snapshot_chainstate.CoinsTip());
+    // that nothing else will be referencing the newly created snapshot coins yet.
+    CCoinsViewCache& coins_cache = *WITH_LOCK(::cs_main, return coins.m_cacheview.get());
 
     uint256 base_blockhash = metadata.m_base_blockhash;
 
@@ -5870,8 +5948,7 @@ util::Result<void> ChainstateManager::PopulateAndValidateSnapshot(
                         return util::Error{Untranslated("Aborting after an interrupt was requested")};
                     }
 
-                    const auto snapshot_cache_state = WITH_LOCK(::cs_main,
-                        return snapshot_chainstate.GetCoinsCacheSizeState());
+                    const auto snapshot_cache_state = GetCoinsCacheSizeState(coins_cache.DynamicMemoryUsage(), coinstip_cache_size_bytes);
 
                     if (snapshot_cache_state >= CoinsCacheSizeState::CRITICAL) {
                         // This is a hack - we don't know what the actual best block is, but that
@@ -5921,14 +5998,18 @@ util::Result<void> ChainstateManager::PopulateAndValidateSnapshot(
     assert(coins_cache.GetBestBlock() == base_blockhash);
 
     // As above, okay to immediately release cs_main here since no other context knows
-    // about the snapshot_chainstate.
-    const CCoinsViewDB& snapshot_coinsdb = WITH_LOCK(::cs_main, return snapshot_chainstate.CoinsDB());
+    // about the snapshot coins.
+    const CCoinsViewDB* snapshot_coinsdb;
+    {
+        LOCK(::cs_main);
+        snapshot_coinsdb = &coins.m_dbview;
+    }
 
     std::optional<CCoinsStats> maybe_stats;
 
     try {
         maybe_stats = ComputeUTXOStats(
-            CoinStatsHashType::HASH_SERIALIZED, snapshot_coinsdb, m_blockman, [&interrupt = m_interrupt] { SnapshotUTXOHashBreakpoint(interrupt); });
+            CoinStatsHashType::HASH_SERIALIZED, *snapshot_coinsdb, m_blockman, [&interrupt = m_interrupt] { SnapshotUTXOHashBreakpoint(interrupt); });
     } catch (StopHashingException const&) {
         return util::Error{Untranslated("Aborting after an interrupt was requested")};
     }
@@ -5942,166 +6023,297 @@ util::Result<void> ChainstateManager::PopulateAndValidateSnapshot(
             au_data.hash_serialized.ToString(), maybe_stats->hashSerialized.ToString()))};
     }
 
-    snapshot_chainstate.m_chain.SetTip(*snapshot_start_block);
-
-    // The remainder of this function requires modifying data protected by cs_main.
-    LOCK(::cs_main);
-
-    // Fake various pieces of CBlockIndex state:
-    CBlockIndex* index = nullptr;
-
-    // Don't make any modifications to the genesis block since it shouldn't be
-    // necessary, and since the genesis block doesn't have normal flags like
-    // BLOCK_VALID_SCRIPTS set.
-    constexpr int AFTER_GENESIS_START{1};
-
-    for (int i = AFTER_GENESIS_START; i <= snapshot_chainstate.m_chain.Height(); ++i) {
-        index = snapshot_chainstate.m_chain[i];
-
-        // Fake BLOCK_OPT_WITNESS so that Chainstate::NeedsRedownload()
-        // won't ask for -reindex on startup.
-        if (DeploymentActiveAt(*index, *this, Consensus::DEPLOYMENT_SEGWIT)) {
-            index->nStatus |= BLOCK_OPT_WITNESS;
-        }
-
-        m_blockman.m_dirty_blockindex.insert(index);
-        // Changes to the block index will be flushed to disk after this call
-        // returns in `ActivateSnapshot()`, when `MaybeRebalanceCaches()` is
-        // called, since we've added a snapshot chainstate and therefore will
-        // have to downsize the IBD chainstate, which will result in a call to
-        // `FlushStateToDisk(FORCE_FLUSH)`.
-    }
-
-    assert(index);
-    assert(index == snapshot_start_block);
-    index->m_chain_tx_count = au_data.m_chain_tx_count;
-
     LogInfo("[snapshot] validated snapshot (%.2f MB)",
         coins_cache.DynamicMemoryUsage() / (1000 * 1000));
     return {};
 }
 
-// Currently, this function holds cs_main for its duration, which could be for
-// multiple minutes due to the ComputeUTXOStats call. Holding cs_main used to be
-// necessary (before d43a1f1a2fa3) to avoid advancing validated_cs farther than
-// its target block. Now it should be possible to avoid this, but simply
-// releasing cs_main here would not be possible because this function is invoked
-// by ConnectTip within ActivateBestChain.
-//
-// Eventually (TODO) it would be better to call this function outside of
-// ActivateBestChain, on a separate thread that should not require cs_main to
-// hash, because the UTXO set is only hashed after the historical chainstate
-// reaches its target block and is no longer changing.
-SnapshotCompletionResult ChainstateManager::MaybeValidateSnapshot(Chainstate& validated_cs, Chainstate& unvalidated_cs)
+void ChainstateManager::UpdateHistoricalPruneLock()
 {
-    AssertLockHeld(cs_main);
+    AssertLockHeld(::cs_main);
+    const CBlockIndex* base{Assert(CurrentChainstate().SnapshotBase())};
+    const CBlockIndex* fork{m_historical_tip ? LastCommonAncestor(m_historical_tip, base) : nullptr};
+    m_blockman.UpdatePruneLock(HISTORICAL_PRUNE_LOCK, {.height_first = fork ? fork->nHeight : 0, .height_last = base->nHeight});
+}
 
-    // If the snapshot does not need to be validated...
-    if (unvalidated_cs.m_assumeutxo != Assumeutxo::UNVALIDATED ||
-            // Or if either chainstate is unusable...
-            !unvalidated_cs.m_from_snapshot_blockhash ||
-            validated_cs.m_assumeutxo != Assumeutxo::VALIDATED ||
-            !validated_cs.m_chain.Tip() ||
-            // Or the validated chainstate is not targeting the snapshot block...
-            !validated_cs.TargetBlockHash() ||
-            *validated_cs.TargetBlockHash() != *unvalidated_cs.m_from_snapshot_blockhash ||
-            // Or the validated chainstate has not reached the snapshot block yet...
-            !validated_cs.ReachedTarget()) {
-       // Then the snapshot cannot be validated and there is nothing to do.
-       return SnapshotCompletionResult::SKIPPED;
+bool ChainstateManager::FlushHistoricalCoins(bool force)
+{
+    AssertLockHeld(::cs_main);
+    if (!m_historical_coins || !m_historical_tip) return true;
+
+    CCoinsViewCache& coins{*m_historical_coins->m_cacheview};
+    const auto now{NodeClock::now()};
+    const bool empty_cache{force || GetCoinsCacheSizeState(coins.DynamicMemoryUsage(), m_historical_coinstip_cache_size) >= CoinsCacheSizeState::CRITICAL};
+    // Blocks the historical coins still need are kept from being pruned based
+    // on the flushed state, so it has to be written before pruning.
+    const bool prune{m_blockman.IsPruneMode() && m_blockman.m_check_for_pruning};
+    if (empty_cache || prune || now >= m_historical_next_write) {
+        if (!CheckDiskSpace(m_blockman.m_opts.blocks_dir)) {
+            GetNotifications().fatalError(_("Disk space is too low!"));
+            return false;
+        }
+        // Make sure all block and undo data the block index refers to is written first.
+        for (const int height : {m_historical_tip->nHeight, ActiveHeight()}) {
+            if (!m_blockman.FlushChainstateBlockFile(height)) {
+                LogWarning("%s: Failed to flush block file.", __func__);
+            }
+        }
+        m_blockman.WriteBlockIndexDB();
+        if (!CheckDiskSpace(m_options.datadir, 48 * 2 * 2 * coins.GetDirtyCount())) {
+            GetNotifications().fatalError(_("Disk space is too low!"));
+            return false;
+        }
+        empty_cache ? coins.Flush() : coins.Sync();
+        UpdateHistoricalPruneLock();
+        constexpr auto range{DATABASE_WRITE_INTERVAL_MAX - DATABASE_WRITE_INTERVAL_MIN};
+        m_historical_next_write = FastRandomContext().rand_uniform_delay(now + DATABASE_WRITE_INTERVAL_MIN, range);
     }
-    assert(validated_cs.TargetBlock() == validated_cs.m_chain.Tip());
+    if (prune) {
+        BlockValidationState state;
+        if (!CurrentChainstate().FlushStateToDisk(state, FlushStateMode::NONE)) return false;
+    }
+    return true;
+}
 
-    auto handle_invalid_snapshot = [&]() EXCLUSIVE_LOCKS_REQUIRED(::cs_main) {
-        bilingual_str user_error = strprintf(_(
-            "%s failed to validate the -assumeutxo snapshot state. "
-            "This indicates a hardware problem, or a bug in the software, or a "
-            "bad software modification that allowed an invalid snapshot to be "
-            "loaded. As a result of this, the node will shut down and stop using any "
-            "state that was built on the snapshot, resetting the chain height "
-            "from %d to %d. On the next "
-            "restart, the node will resume syncing from %d "
-            "without using any snapshot data. "
-            "Please report this incident to %s, including how you obtained the snapshot. "
-            "The invalid snapshot chainstate will be left on disk in case it is "
-            "helpful in diagnosing the issue that caused this error."),
-            CLIENT_NAME, unvalidated_cs.m_chain.Height(),
-            validated_cs.m_chain.Height(),
-            validated_cs.m_chain.Height(), CLIENT_BUGREPORT);
+void ChainstateManager::ResizeHistoricalCoins(size_t coinstip_size, size_t coinsdb_size)
+{
+    AssertLockHeld(::cs_main);
+    Assert(!m_historical_hashing);
+    if (coinstip_size == m_historical_coinstip_cache_size && coinsdb_size == m_historical_coinsdb_cache_size) return;
+    const bool shrink{coinstip_size < m_historical_coinstip_cache_size};
+    m_historical_coinstip_cache_size = coinstip_size;
+    m_historical_coinsdb_cache_size = coinsdb_size;
+    m_historical_coins->m_dbview.ResizeCache(coinsdb_size);
+    LogInfo("[background validation] resized coinsdb cache to %.1f MiB", coinsdb_size / double(1_MiB));
+    LogInfo("[background validation] resized coinstip cache to %.1f MiB", coinstip_size / double(1_MiB));
+    // Deallocate the in-memory coins map if it shrinks.
+    if (shrink) FlushHistoricalCoins(/*force=*/true);
+}
 
-        LogError("[snapshot] !!! %s\n", user_error.original);
-        LogError("[snapshot] deleting snapshot, reverting to validated chain, and stopping node\n");
+ChainstateManager::HistoricalStep ChainstateManager::AdvanceHistoricalChain()
+{
+    AssertLockNotHeld(::cs_main);
+    CBlockIndex* next;
+    FlatFilePos next_pos;
+    {
+        LOCK(::cs_main);
+        const Chainstate& chainstate{CurrentChainstate()};
+        if (chainstate.m_assumeutxo != Assumeutxo::UNVALIDATED || !m_historical_coins) return HistoricalStep::DONE;
+        CBlockIndex* base{Assert(m_blockman.LookupBlockIndex(*chainstate.m_from_snapshot_blockhash))};
+        CBlockIndex* tip{m_historical_tip};
+        if (tip == base) return HistoricalStep::AT_TARGET;
 
-        // Reset chainstate target to network tip instead of snapshot block.
-        validated_cs.SetTargetBlock(nullptr);
-
-        unvalidated_cs.m_assumeutxo = Assumeutxo::INVALID;
-
-        auto rename_result = unvalidated_cs.InvalidateCoinsDBOnDisk();
-        if (!rename_result) {
-            user_error += Untranslated("\n") + util::ErrorString(rename_result);
+        if (tip && base->GetAncestor(tip->nHeight) != tip) {
+            // The historical coins follow a branch that does not lead to the
+            // snapshot base, e.g. because the node synced a stale branch before
+            // the snapshot was loaded.
+            CBlock block;
+            CCoinsViewCache view{m_historical_coins->m_cacheview.get()};
+            if (!m_blockman.ReadBlock(block, *tip) || DisconnectBlock(block, tip, view) != DISCONNECT_OK) {
+                LogWarning("[background validation] Failed to disconnect block %s, replaying from the genesis block instead",
+                           tip->GetBlockHash().ToString());
+                const bool in_memory{m_historical_coins->m_dbview.IsMemoryOnly()};
+                m_historical_coins.reset();
+                m_historical_coins = MakeCoinsViews(HistoricalCoinsPath(m_options.datadir), m_historical_coinsdb_cache_size, in_memory, /*should_wipe=*/true);
+                m_historical_coins->InitCache(m_options.prevoutfetch_threads_num);
+                m_historical_tip = nullptr;
+                UpdateHistoricalPruneLock();
+                return HistoricalStep::PROGRESS;
+            }
+            view.Flush(/*reallocate_cache=*/false);
+            m_historical_tip = tip->pprev;
+            return FlushHistoricalCoins(/*force=*/false) ? HistoricalStep::PROGRESS : HistoricalStep::DONE;
         }
 
-        GetNotifications().fatalError(user_error);
-    };
+        next = base->GetAncestor(tip ? tip->nHeight + 1 : 0);
+        if (!(next->nStatus & BLOCK_HAVE_DATA)) return HistoricalStep::WAITING;
+        next_pos = next->GetBlockPos();
+    }
 
-    CCoinsViewDB& validated_coins_db = validated_cs.CoinsDB();
-    validated_cs.ForceFlushStateToDisk();
+    // Read the block without holding cs_main. The prune lock keeps it on disk.
+    auto block{std::make_shared<CBlock>()};
+    if (!m_blockman.ReadBlock(*block, next_pos, next->GetBlockHash())) {
+        GetNotifications().fatalError(_("Failed to read block."));
+        return HistoricalStep::DONE;
+    }
 
-    const auto& maybe_au_data = m_options.chainparams.AssumeutxoForHeight(validated_cs.m_chain.Height());
+    LOCK(::cs_main);
+    // Start over if the snapshot was validated or invalidated in the meantime.
+    if (CurrentChainstate().m_assumeutxo != Assumeutxo::UNVALIDATED || !m_historical_coins || next->pprev != m_historical_tip) {
+        return HistoricalStep::PROGRESS;
+    }
+    {
+        CoinsViewOverlay& view{*m_historical_coins->m_connect_block_view};
+        const auto reset_guard{view.StartFetching(*block)};
+        BlockValidationState state;
+        const bool connected{ConnectBlock(*block, state, next, view)};
+        if (m_options.signals) {
+            m_options.signals->BlockChecked(block, state);
+        }
+        if (!connected) {
+            LogError("[background validation] ConnectBlock %s failed, %s", next->GetBlockHash().ToString(), state.ToString());
+            if (state.IsInvalid()) InvalidateSnapshot();
+            return HistoricalStep::DONE;
+        }
+        view.Flush(/*reallocate_cache=*/false);
+    }
+    m_historical_tip = next;
+
+    // Only log every so often so that we don't bury log messages at the tip.
+    constexpr int BACKGROUND_LOG_INTERVAL = 2000;
+    const bool at_target{next->nHeight == AssumedValidBase()->nHeight};
+    if (next->nHeight % BACKGROUND_LOG_INTERVAL == 0 || at_target) {
+        UpdateTipLog(*this, *m_historical_coins->m_cacheview, next, __func__, "[background validation] ", "", /*background_validation=*/true);
+    }
+    if (!FlushHistoricalCoins(/*force=*/false)) return HistoricalStep::DONE;
+    return at_target ? HistoricalStep::AT_TARGET : HistoricalStep::PROGRESS;
+}
+
+SnapshotCompletionResult ChainstateManager::ValidateSnapshot()
+{
+    const CBlockIndex* base;
+    const CCoinsViewDB* coins_db;
+    {
+        LOCK(::cs_main);
+        base = AssumedValidBase();
+        if (!base || !m_historical_coins || m_historical_tip != base) return SnapshotCompletionResult::SKIPPED;
+        if (!FlushHistoricalCoins(/*force=*/true)) return SnapshotCompletionResult::SKIPPED;
+        coins_db = &m_historical_coins->m_dbview;
+        m_historical_hashing = true;
+    }
+
+    const auto& maybe_au_data{GetParams().AssumeutxoForBlockhash(base->GetBlockHash())};
     if (!maybe_au_data) {
         LogWarning("[snapshot] assumeutxo data not found for height "
-            "(%d) - refusing to validate snapshot", validated_cs.m_chain.Height());
-        handle_invalid_snapshot();
+            "(%d) - refusing to validate snapshot", base->nHeight);
+        LOCK(::cs_main);
+        m_historical_hashing = false;
+        InvalidateSnapshot();
         return SnapshotCompletionResult::MISSING_CHAINPARAMS;
     }
 
-    const AssumeutxoData& au_data = *maybe_au_data;
-    std::optional<CCoinsStats> validated_cs_stats;
+    std::optional<CCoinsStats> stats;
     LogInfo("[snapshot] computing UTXO stats for background chainstate to validate "
         "snapshot - this could take a few minutes");
     try {
-        validated_cs_stats = ComputeUTXOStats(
+        stats = ComputeUTXOStats(
             CoinStatsHashType::HASH_SERIALIZED,
-            validated_coins_db,
+            *coins_db,
             m_blockman,
             [&interrupt = m_interrupt] { SnapshotUTXOHashBreakpoint(interrupt); });
     } catch (StopHashingException const&) {
+        WITH_LOCK(::cs_main, m_historical_hashing = false);
         return SnapshotCompletionResult::STATS_FAILED;
     }
 
-    // XXX note that this function is slow and will hold cs_main for potentially minutes.
-    if (!validated_cs_stats) {
-        LogWarning("[snapshot] failed to generate stats for validation coins db");
-        // While this isn't a problem with the snapshot per se, this condition
-        // prevents us from validating the snapshot, so we should shut down and let the
-        // user handle the issue manually.
-        handle_invalid_snapshot();
-        return SnapshotCompletionResult::STATS_FAILED;
+    {
+        LOCK(::cs_main);
+        m_historical_hashing = false;
+        if (!stats) {
+            LogWarning("[snapshot] failed to generate stats for validation coins db");
+            // While this isn't a problem with the snapshot per se, this condition
+            // prevents us from validating the snapshot, so we should shut down and let the
+            // user handle the issue manually.
+            InvalidateSnapshot();
+            return SnapshotCompletionResult::STATS_FAILED;
+        }
+
+        // Compare the historical UTXO set hash against the hard-coded
+        // assumeutxo hash we expect.
+        //
+        // TODO: For belt-and-suspenders, we could cache the UTXO set
+        // hash for the snapshot when it's loaded in its chainstate's leveldb. We could then
+        // reference that here for an additional check.
+        if (AssumeutxoHash{stats->hashSerialized} != maybe_au_data->hash_serialized) {
+            LogWarning("[snapshot] hash mismatch: actual=%s, expected=%s",
+                stats->hashSerialized.ToString(),
+                maybe_au_data->hash_serialized.ToString());
+            InvalidateSnapshot();
+            return SnapshotCompletionResult::HASH_MISMATCH;
+        }
+
+        LogInfo("[snapshot] snapshot beginning at %s has been fully validated", base->GetBlockHash().ToString());
+        Chainstate& chainstate{CurrentChainstate()};
+        chainstate.m_assumeutxo = Assumeutxo::VALIDATED;
+
+        // Forget about the snapshot on disk first, so that an interrupted
+        // cleanup is completed on the next startup.
+        if (!chainstate.CoinsDB().IsMemoryOnly()) {
+            const fs::path base_blockhash_path{chainstate.StoragePath() / node::UNVALIDATED_SNAPSHOT_BLOCKHASH_FILENAME};
+            try {
+                fs::remove(base_blockhash_path);
+            } catch (const fs::filesystem_error& e) {
+                LogWarning("[snapshot] failed to remove file %s: %s", fs::PathToString(base_blockhash_path), e.code().message());
+            }
+        }
+        const bool historical_on_disk{!m_historical_coins->m_dbview.IsMemoryOnly()};
+        m_historical_coins.reset();
+        m_historical_tip = nullptr;
+        m_blockman.DeletePruneLock(HISTORICAL_PRUNE_LOCK);
+        const fs::path historical_path{HistoricalCoinsPath(m_options.datadir)};
+        if (historical_on_disk && !DeleteCoinsDBFromDisk(historical_path, /*is_snapshot=*/false)) {
+            LogWarning("Deletion of %s failed. Please remove it manually, as the "
+                       "directory is now unnecessary.",
+                       fs::PathToString(historical_path));
+        }
+        MaybeRebalanceCaches();
     }
 
-    // Compare the validated chainstate's UTXO set hash against the hard-coded
-    // assumeutxo hash we expect.
-    //
-    // TODO: For belt-and-suspenders, we could cache the UTXO set
-    // hash for the snapshot when it's loaded in its chainstate's leveldb. We could then
-    // reference that here for an additional check.
-    if (AssumeutxoHash{validated_cs_stats->hashSerialized} != au_data.hash_serialized) {
-        LogWarning("[snapshot] hash mismatch: actual=%s, expected=%s",
-            validated_cs_stats->hashSerialized.ToString(),
-            au_data.hash_serialized.ToString());
-        handle_invalid_snapshot();
-        return SnapshotCompletionResult::HASH_MISMATCH;
+    if (snapshot_download_completed) {
+        snapshot_download_completed();
     }
-
-    LogInfo("[snapshot] snapshot beginning at %s has been fully validated",
-        unvalidated_cs.m_from_snapshot_blockhash->ToString());
-
-    unvalidated_cs.m_assumeutxo = Assumeutxo::VALIDATED;
-    validated_cs.m_target_utxohash = AssumeutxoHash{validated_cs_stats->hashSerialized};
-    this->MaybeRebalanceCaches();
-
     return SnapshotCompletionResult::SUCCESS;
+}
+
+void ChainstateManager::InvalidateSnapshot()
+{
+    AssertLockHeld(::cs_main);
+    Chainstate& chainstate{CurrentChainstate()};
+    const int historical_height{m_historical_tip ? m_historical_tip->nHeight : 0};
+    bilingual_str user_error = strprintf(_(
+        "%s failed to validate the -assumeutxo snapshot state. "
+        "This indicates a hardware problem, or a bug in the software, or a "
+        "bad software modification that allowed an invalid snapshot to be "
+        "loaded. As a result of this, the node will shut down and stop using any "
+        "state that was built on the snapshot, resetting the chain height "
+        "from %d to %d. On the next "
+        "restart, the node will resume syncing from %d "
+        "without using any snapshot data. "
+        "Please report this incident to %s, including how you obtained the snapshot. "
+        "The invalid snapshot chainstate will be left on disk in case it is "
+        "helpful in diagnosing the issue that caused this error."),
+        CLIENT_NAME, chainstate.m_chain.Height(),
+        historical_height,
+        historical_height, CLIENT_BUGREPORT);
+
+    LogError("[snapshot] !!! %s\n", user_error.original);
+    LogError("[snapshot] deleting snapshot, reverting to validated chain, and stopping node\n");
+
+    // Do not continue building on the snapshot.
+    chainstate.m_assumeutxo = Assumeutxo::INVALID;
+
+    // Mark the historical coins to replace the chainstate on the next startup.
+    if (m_historical_coins && !m_historical_coins->m_dbview.IsMemoryOnly()) {
+        m_historical_coins.reset();
+        const fs::path historical_path{HistoricalCoinsPath(m_options.datadir)};
+        const fs::path fallback_path{m_options.datadir / fs::u8path(strprintf("chainstate%s", node::FALLBACK_CHAINSTATE_SUFFIX))};
+        try {
+            fs::rename(historical_path, fallback_path);
+        } catch (const fs::filesystem_error& e) {
+            LogError("[snapshot] Error renaming path (%s) -> (%s): %s",
+                     fs::PathToString(historical_path), fs::PathToString(fallback_path), e.what());
+            user_error += Untranslated("\n") + strprintf(_(
+                "Rename of '%s' -> '%s' failed. "
+                "You should resolve this by manually moving or deleting the invalid "
+                "snapshot directory %s, otherwise you will encounter the same error again "
+                "on the next startup."),
+                fs::PathToString(historical_path), fs::PathToString(fallback_path), fs::PathToString(chainstate.StoragePath()));
+        }
+    }
+    m_historical_coins.reset();
+    m_historical_tip = nullptr;
+
+    GetNotifications().fatalError(user_error);
 }
 
 Chainstate& ChainstateManager::ActiveChainstate() const
@@ -6113,32 +6325,27 @@ Chainstate& ChainstateManager::ActiveChainstate() const
 void ChainstateManager::MaybeRebalanceCaches()
 {
     AssertLockHeld(::cs_main);
+    // The historical coins database is in use without cs_main, see ValidateSnapshot().
+    if (m_historical_hashing) return;
     Chainstate& current_cs{CurrentChainstate()};
-    Chainstate* historical_cs{HistoricalChainstate()};
-    if (!historical_cs && !current_cs.m_from_snapshot_blockhash) {
-        // Allocate everything to the IBD chainstate. This will always happen
+    if (!m_historical_coins) {
+        if (current_cs.m_from_snapshot_blockhash) {
+            LogInfo("[snapshot] allocating all cache to the snapshot chainstate");
+        }
+        // Allocate everything to the current chainstate. This will always happen
         // when we are not using a snapshot.
         current_cs.ResizeCoinsCaches(m_total_coinstip_cache, m_total_coinsdb_cache);
-    } else if (!historical_cs) {
-        // If background validation has completed and snapshot is our active chain...
-        LogInfo("[snapshot] allocating all cache to the snapshot chainstate");
-        // Allocate everything to the snapshot chainstate.
-        current_cs.ResizeCoinsCaches(m_total_coinstip_cache, m_total_coinsdb_cache);
+        return;
+    }
+    // While validating a snapshot, determine who needs more cache based on IBD status.
+    //
+    // Note: shrink caches first so that we don't inadvertently overwhelm available memory.
+    if (IsInitialBlockDownload()) {
+        ResizeHistoricalCoins(m_total_coinstip_cache * 0.05, m_total_coinsdb_cache * 0.05);
+        current_cs.ResizeCoinsCaches(m_total_coinstip_cache * 0.95, m_total_coinsdb_cache * 0.95);
     } else {
-        // If both chainstates exist, determine who needs more cache based on IBD status.
-        //
-        // Note: shrink caches first so that we don't inadvertently overwhelm available memory.
-        if (IsInitialBlockDownload()) {
-            historical_cs->ResizeCoinsCaches(
-                m_total_coinstip_cache * 0.05, m_total_coinsdb_cache * 0.05);
-            current_cs.ResizeCoinsCaches(
-                m_total_coinstip_cache * 0.95, m_total_coinsdb_cache * 0.95);
-        } else {
-            current_cs.ResizeCoinsCaches(
-                m_total_coinstip_cache * 0.05, m_total_coinsdb_cache * 0.05);
-            historical_cs->ResizeCoinsCaches(
-                m_total_coinstip_cache * 0.95, m_total_coinsdb_cache * 0.95);
-        }
+        current_cs.ResizeCoinsCaches(m_total_coinstip_cache * 0.05, m_total_coinsdb_cache * 0.05);
+        ResizeHistoricalCoins(m_total_coinstip_cache * 0.95, m_total_coinsdb_cache * 0.95);
     }
 }
 
@@ -6176,42 +6383,153 @@ ChainstateManager::~ChainstateManager()
     m_versionbitscache.Clear();
 }
 
-Chainstate* ChainstateManager::LoadAssumeutxoChainstate()
+util::Result<std::optional<uint256>> ChainstateManager::LoadAssumeutxoState(bool wipe)
 {
-    assert(!CurrentChainstate().m_from_snapshot_blockhash);
-    std::optional<fs::path> path = node::FindAssumeutxoChainstateDir(m_options.datadir);
-    if (!path) {
-        return nullptr;
-    }
-    std::optional<uint256> base_blockhash = node::ReadSnapshotBaseBlockhash(*path);
-    if (!base_blockhash) {
-        return nullptr;
-    }
-    LogInfo("[snapshot] detected active snapshot chainstate (%s) - loading",
-        fs::PathToString(*path));
+    AssertLockHeld(::cs_main);
+    const auto chainstate_path{[&](std::string_view suffix) { return m_options.datadir / fs::u8path(strprintf("chainstate%s", suffix)); }};
+    const fs::path main_path{chainstate_path("")};
+    const fs::path snapshot_path{chainstate_path(node::SNAPSHOT_CHAINSTATE_SUFFIX)};
+    const fs::path historical_path{chainstate_path(node::HISTORICAL_CHAINSTATE_SUFFIX)};
+    const fs::path fallback_path{chainstate_path(node::FALLBACK_CHAINSTATE_SUFFIX)};
+    const auto rename{[](const fs::path& from, const fs::path& to) {
+        LogInfo("[snapshot] renaming chainstate directory %s to %s", fs::PathToString(from), fs::PathToString(to));
+        fs::rename(from, to);
+    }};
 
-    auto snapshot_chainstate{std::make_unique<Chainstate>(nullptr, m_blockman, *this, base_blockhash)};
-    LogInfo("[snapshot] switching active chainstate to %s", snapshot_chainstate->ToString());
-    return &this->AddChainstate(std::move(snapshot_chainstate));
+    try {
+        // A snapshot failed validation, so the coins that were validating it
+        // replace the chainstate, which is kept for diagnosis.
+        if (fs::exists(fallback_path)) {
+            if (fs::exists(main_path)) rename(main_path, snapshot_path + "_INVALID");
+            rename(fallback_path, main_path);
+        }
+
+        if (fs::exists(snapshot_path)) {
+            // Activating the snapshot was interrupted, or the datadir was
+            // created by an older version, which kept two chainstates and
+            // stored the base blockhash in a different file.
+            const fs::path unvalidated_file{snapshot_path / node::UNVALIDATED_SNAPSHOT_BLOCKHASH_FILENAME};
+            const fs::path legacy_file{snapshot_path / node::SNAPSHOT_BLOCKHASH_FILENAME};
+            const fs::path& base_blockhash_file{fs::exists(unvalidated_file) ? unvalidated_file : legacy_file};
+            if (!fs::exists(base_blockhash_file)) {
+                // Loading the snapshot was interrupted.
+                LogInfo("[snapshot] removing incomplete snapshot chainstate %s", fs::PathToString(snapshot_path));
+                fs::remove_all(snapshot_path);
+            } else {
+                const auto base_blockhash{node::ReadSnapshotBaseBlockhash(base_blockhash_file)};
+                if (!base_blockhash) {
+                    return util::Error{Untranslated(strprintf("Failed to read the base blockhash of %s", fs::PathToString(snapshot_path)))};
+                }
+                if (!GetParams().AssumeutxoForBlockhash(*base_blockhash)) {
+                    GetNotifications().fatalError(strprintf(_("Assumeutxo data not found for the given blockhash '%s'."), base_blockhash->ToString()));
+                    return util::Error{};
+                }
+                if (&base_blockhash_file == &legacy_file && !node::WriteSnapshotBaseBlockhash(unvalidated_file, *base_blockhash)) {
+                    return util::Error{Untranslated(strprintf("Failed to write the base blockhash of %s", fs::PathToString(snapshot_path)))};
+                }
+                if (fs::exists(main_path)) {
+                    if (fs::exists(historical_path)) {
+                        return util::Error{Untranslated(strprintf("Unexpected chainstate directories %s, %s and %s. Remove %s to continue without the snapshot.",
+                            fs::PathToString(main_path), fs::PathToString(snapshot_path), fs::PathToString(historical_path), fs::PathToString(snapshot_path)))};
+                    }
+                    rename(main_path, historical_path);
+                }
+                rename(snapshot_path, main_path);
+            }
+        }
+
+        // This file marks the chainstate as based on a snapshot that is not
+        // validated yet. Older versions left a differently named one behind
+        // after validating the snapshot.
+        std::optional<uint256> base_blockhash;
+        const fs::path unvalidated_file{main_path / node::UNVALIDATED_SNAPSHOT_BLOCKHASH_FILENAME};
+        if (fs::exists(unvalidated_file)) {
+            base_blockhash = node::ReadSnapshotBaseBlockhash(unvalidated_file);
+            if (!base_blockhash) {
+                return util::Error{Untranslated(strprintf("Failed to read the base blockhash of %s", fs::PathToString(main_path)))};
+            }
+            if (wipe) {
+                LogInfo("[snapshot] deleting snapshot chainstate due to reindexing");
+                fs::remove(unvalidated_file);
+                base_blockhash.reset();
+            } else {
+                LogInfo("[snapshot] detected chainstate based on snapshot %s that is not validated yet", base_blockhash->ToString());
+            }
+        }
+
+        // The historical coins are not needed once the snapshot is validated.
+        if (!base_blockhash && fs::exists(historical_path)) {
+            if (!DeleteCoinsDBFromDisk(historical_path, /*is_snapshot=*/false)) {
+                return util::Error{Untranslated(strprintf("Failed to remove %s", fs::PathToString(historical_path)))};
+            }
+        }
+        return base_blockhash;
+    } catch (const fs::filesystem_error& e) {
+        LogError("[snapshot] %s", e.what());
+        return util::Error{Untranslated(strprintf("Failed to prepare the chainstate directories: %s", e.what()))};
+    }
 }
 
-Chainstate& ChainstateManager::AddChainstate(std::unique_ptr<Chainstate> chainstate)
+util::Result<void> ChainstateManager::LoadHistoricalCoins(bool in_memory, const std::function<void()>& coins_error_cb)
 {
-    Chainstate& prev_chainstate{CurrentChainstate()};
-    assert(prev_chainstate.m_assumeutxo == Assumeutxo::VALIDATED);
-    // Set target block for historical chainstate to snapshot block.
-    assert(!prev_chainstate.TargetBlockHash());
-    prev_chainstate.SetTargetBlockHash(*Assert(chainstate->m_from_snapshot_blockhash));
-    m_chainstates.push_back(std::move(chainstate));
-    Chainstate& curr_chainstate{CurrentChainstate()};
-    assert(&curr_chainstate == m_chainstates.back().get());
+    AssertLockHeld(::cs_main);
+    const CBlockIndex* base{AssumedValidBase()};
+    if (!base) return {};
 
-    // Transfer possession of the mempool to the chainstate.
-    // Mempool is empty at this point because we're still in IBD.
-    assert(!prev_chainstate.m_mempool || prev_chainstate.m_mempool->size() == 0);
-    assert(!curr_chainstate.m_mempool);
-    std::swap(curr_chainstate.m_mempool, prev_chainstate.m_mempool);
-    return curr_chainstate;
+    const fs::path path{HistoricalCoinsPath(m_options.datadir)};
+    LogInfo("[snapshot] loading coins database %s to validate snapshot %s", fs::PathToString(path), base->GetBlockHash().ToString());
+    m_historical_coinstip_cache_size = m_total_coinstip_cache * 0.2;
+    m_historical_coinsdb_cache_size = m_total_coinsdb_cache * 0.2;
+    try {
+        m_historical_coins = MakeCoinsViews(path, m_historical_coinsdb_cache_size, in_memory, /*should_wipe=*/false);
+    } catch (const dbwrapper_error& err) {
+        LogError("%s", err.what());
+        return util::Error{_("Error opening coins database")};
+    }
+    if (coins_error_cb) {
+        m_historical_coins->m_catcherview.AddReadErrCallback(coins_error_cb);
+    }
+    if (m_historical_coins->m_dbview.NeedsUpgrade()) {
+        return util::Error{_("Unsupported chainstate database format found. "
+                             "Please restart with -reindex-chainstate. This will "
+                             "rebuild the chainstate database.")};
+    }
+    if (!ReplayBlocks(m_historical_coins->m_dbview)) {
+        return util::Error{_("Unable to replay blocks. You will need to rebuild the database using -reindex-chainstate.")};
+    }
+    m_historical_coins->InitCache(m_options.prevoutfetch_threads_num);
+    const uint256 best_block{m_historical_coins->m_cacheview->GetBestBlock()};
+    if (!best_block.IsNull()) {
+        m_historical_tip = m_blockman.LookupBlockIndex(best_block);
+        if (!m_historical_tip) return util::Error{_("Error initializing block database")};
+    }
+    UpdateHistoricalPruneLock();
+    return {};
+}
+
+std::optional<std::pair<size_t, size_t>> ChainstateManager::HistoricalCoinsCacheSizes() const
+{
+    AssertLockHeld(::cs_main);
+    if (!m_historical_coins) return std::nullopt;
+    return std::make_pair(m_historical_coinstip_cache_size, m_historical_coinsdb_cache_size);
+}
+
+void ChainstateManager::ResetHistoricalCoins()
+{
+    AssertLockHeld(::cs_main);
+    if (!m_historical_coins) return;
+    FlushHistoricalCoins(/*force=*/true);
+    m_historical_coins.reset();
+    m_historical_tip = nullptr;
+}
+
+const CBlockIndex* ChainstateManager::ValidatedTip() const
+{
+    AssertLockHeld(::cs_main);
+    const Chainstate& chainstate{CurrentChainstate()};
+    if (chainstate.m_assumeutxo == Assumeutxo::VALIDATED) return chainstate.m_chain.Tip();
+    if (chainstate.m_assumeutxo == Assumeutxo::INVALID || !m_historical_tip) return nullptr;
+    return LastCommonAncestor(m_historical_tip, Assert(chainstate.SnapshotBase()));
 }
 
 bool IsBIP30Repeat(const CBlockIndex& block_index)
@@ -6224,56 +6542,6 @@ bool IsBIP30Unspendable(const uint256& block_hash, int block_height)
 {
     return (block_height==91722 && block_hash == uint256{"00000000000271a2dc26e7667f8419f2e15416dc6955e5a6c6cdf3f2574dd08e"}) ||
            (block_height==91812 && block_hash == uint256{"00000000000af0aed4792b1acee3d966af36cf5def14935db8de83d6f9306f2f"});
-}
-
-util::Result<void> Chainstate::InvalidateCoinsDBOnDisk()
-{
-    // Should never be called on a non-snapshot chainstate.
-    assert(m_from_snapshot_blockhash);
-
-    // Coins views no longer usable.
-    m_coins_views.reset();
-
-    const fs::path db_path{StoragePath()};
-    const fs::path invalid_path{db_path + "_INVALID"};
-    const std::string db_path_str{fs::PathToString(db_path)};
-    const std::string invalid_path_str{fs::PathToString(invalid_path)};
-    LogInfo("[snapshot] renaming snapshot datadir %s to %s", db_path_str, invalid_path_str);
-
-    // The invalid storage directory is simply moved and not deleted because we may
-    // want to do forensics later during issue investigation. The user is instructed
-    // accordingly in MaybeValidateSnapshot().
-    try {
-        fs::rename(db_path, invalid_path);
-    } catch (const fs::filesystem_error& e) {
-        LogError("While invalidating the coins db: Error renaming file '%s' -> '%s': %s",
-                 db_path_str, invalid_path_str, e.what());
-        return util::Error{strprintf(_(
-            "Rename of '%s' -> '%s' failed. "
-            "You should resolve this by manually moving or deleting the invalid "
-            "snapshot directory %s, otherwise you will encounter the same error again "
-            "on the next startup."),
-            db_path_str, invalid_path_str, db_path_str)};
-    }
-    return {};
-}
-
-bool ChainstateManager::DeleteChainstate(Chainstate& chainstate)
-{
-    AssertLockHeld(::cs_main);
-    assert(!chainstate.m_coins_views);
-    const fs::path db_path{chainstate.StoragePath()};
-    if (!DeleteCoinsDBFromDisk(db_path, /*is_snapshot=*/bool{chainstate.m_from_snapshot_blockhash})) {
-        LogError("Deletion of %s failed. Please remove it manually to continue reindexing.",
-                  fs::PathToString(db_path));
-        return false;
-    }
-    std::unique_ptr<Chainstate> prev_chainstate{Assert(RemoveChainstate(chainstate))};
-    Chainstate& curr_chainstate{CurrentChainstate()};
-    assert(!prev_chainstate->m_mempool || prev_chainstate->m_mempool->size() == 0);
-    assert(!curr_chainstate.m_mempool);
-    std::swap(curr_chainstate.m_mempool, prev_chainstate->m_mempool);
-    return true;
 }
 
 ChainstateRole Chainstate::GetRole() const
@@ -6305,86 +6573,13 @@ std::optional<int> ChainstateManager::BlocksAheadOfTip() const
     return std::nullopt;
 }
 
-bool ChainstateManager::ValidatedSnapshotCleanup(Chainstate& validated_cs, Chainstate& unvalidated_cs)
-{
-    AssertLockHeld(::cs_main);
-    if (unvalidated_cs.m_assumeutxo != Assumeutxo::VALIDATED) {
-        // No need to clean up.
-        return false;
-    }
-
-    const fs::path validated_path{validated_cs.StoragePath()};
-    const fs::path assumed_valid_path{unvalidated_cs.StoragePath()};
-    const fs::path delete_path{validated_path + "_todelete"};
-
-    // Since we're going to be moving around the underlying leveldb filesystem content
-    // for each chainstate, make sure that the chainstates (and their constituent
-    // CoinsViews members) have been destructed first.
-    //
-    // The caller of this method will be responsible for reinitializing chainstates
-    // if they want to continue operation.
-    this->ResetChainstates();
-    assert(this->m_chainstates.size() == 0);
-
-    LogInfo("[snapshot] deleting background chainstate directory (now unnecessary) (%s)",
-              fs::PathToString(validated_path));
-
-    auto rename_failed_abort = [this](
-                                   fs::path p_old,
-                                   fs::path p_new,
-                                   const fs::filesystem_error& err) {
-        LogError("[snapshot] Error renaming path (%s) -> (%s): %s\n",
-                  fs::PathToString(p_old), fs::PathToString(p_new), err.what());
-        GetNotifications().fatalError(strprintf(_(
-            "Rename of '%s' -> '%s' failed. "
-            "Cannot clean up the background chainstate leveldb directory."),
-            fs::PathToString(p_old), fs::PathToString(p_new)));
-    };
-
-    try {
-        fs::rename(validated_path, delete_path);
-    } catch (const fs::filesystem_error& e) {
-        rename_failed_abort(validated_path, delete_path, e);
-        throw;
-    }
-
-    LogInfo("[snapshot] moving snapshot chainstate (%s) to "
-              "default chainstate directory (%s)",
-              fs::PathToString(assumed_valid_path), fs::PathToString(validated_path));
-
-    try {
-        fs::rename(assumed_valid_path, validated_path);
-    } catch (const fs::filesystem_error& e) {
-        rename_failed_abort(assumed_valid_path, validated_path, e);
-        throw;
-    }
-
-    if (!DeleteCoinsDBFromDisk(delete_path, /*is_snapshot=*/false)) {
-        // No need to FatalError because once the unneeded bg chainstate data is
-        // moved, it will not interfere with subsequent initialization.
-        LogWarning("Deletion of %s failed. Please remove it manually, as the "
-                   "directory is now unnecessary.",
-                   fs::PathToString(delete_path));
-    } else {
-        LogInfo("[snapshot] deleted background chainstate directory (%s)",
-                fs::PathToString(validated_path));
-    }
-    return true;
-}
-
 std::pair<int, int> Chainstate::GetPruneRange(int last_height_can_prune) const
 {
     if (m_chain.Height() <= 0) {
         return {0, 0};
     }
+    // Blocks needed to validate a snapshot are protected by a prune lock.
     int prune_start{0};
-
-    if (m_from_snapshot_blockhash && m_assumeutxo != Assumeutxo::VALIDATED) {
-        // Only prune blocks _after_ the snapshot if this is a snapshot chain
-        // that has not been fully validated yet. The earlier blocks need to be
-        // kept to validate the snapshot
-        prune_start = Assert(SnapshotBase())->nHeight + 1;
-    }
 
     int max_prune = std::max<int>(
         0, m_chain.Height() - static_cast<int>(MIN_BLOCKS_TO_KEEP));
@@ -6402,9 +6597,12 @@ std::pair<int, int> Chainstate::GetPruneRange(int last_height_can_prune) const
 
 std::optional<std::pair<const CBlockIndex*, const CBlockIndex*>> ChainstateManager::GetHistoricalBlockRange() const
 {
-    const Chainstate* chainstate{HistoricalChainstate()};
-    if (!chainstate) return {};
-    return std::make_pair(chainstate->m_chain.Tip(), chainstate->TargetBlock());
+    const CBlockIndex* base{AssumedValidBase()};
+    if (!base) return {};
+    // Before the first block is connected, the replay starts at the genesis block.
+    const CBlockIndex* tip{m_historical_tip ? m_historical_tip : ActiveChain().Genesis()};
+    if (!tip) return {};
+    return std::make_pair(tip, base);
 }
 
 util::Result<void> ChainstateManager::ActivateBestChains()

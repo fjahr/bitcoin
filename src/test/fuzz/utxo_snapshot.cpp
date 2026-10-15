@@ -112,7 +112,7 @@ void utxo_snapshot_fuzz(FuzzBufferType buffer)
 
     const auto snapshot_path = gArgs.GetDataDirNet() / "fuzzed_snapshot.dat";
 
-    Assert(!chainman.ActiveChainstate().m_from_snapshot_blockhash);
+    Assert(!WITH_LOCK(::cs_main, return chainman.ActiveChainstate().m_from_snapshot_blockhash));
 
     {
         AutoFile outfile{fsbridge::fopen(snapshot_path, "wb")};
@@ -202,7 +202,7 @@ void utxo_snapshot_fuzz(FuzzBufferType buffer)
         Assert(g_chain->size() == coinscache.GetCacheSize());
         dirty_chainman = true;
     } else {
-        Assert(!chainman.ActiveChainstate().m_from_snapshot_blockhash);
+        Assert(!WITH_LOCK(::cs_main, return chainman.ActiveChainstate().m_from_snapshot_blockhash));
     }
     // Snapshot should refuse to load a second time regardless of validity
     Assert(!ActivateFuzzedSnapshot());

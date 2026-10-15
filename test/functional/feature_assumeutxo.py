@@ -246,8 +246,9 @@ class AssumeutxoTest(BitcoinTestFramework):
         # Try importing the snapshot and assert its success
         loaded = n3.loadtxoutset(dump_output_path)
         assert_equal(loaded['base_height'], SNAPSHOT_BASE_HEIGHT)
+        # Background validation leaves the divergent chain, which does not lead to the snapshot block
+        self.wait_until(lambda: n3.getchainstates()["chainstates"][0]['blocks'] == START_HEIGHT)
         normal, snapshot = n3.getchainstates()["chainstates"]
-        assert_equal(normal['blocks'], START_HEIGHT + 99)
         assert_equal(snapshot['blocks'], SNAPSHOT_BASE_HEIGHT)
 
         # Both states should have the same nBits and target
@@ -376,20 +377,18 @@ class AssumeutxoTest(BitcoinTestFramework):
         assert 'NETWORK_LIMITED' in node_services
 
     @contextlib.contextmanager
-    def assert_disk_cleanup(self, node, assumeutxo_used):
+    def assert_disk_cleanup(self, node):
         """
-        Ensure an assumeutxo node is cleaning up the background chainstate
+        Ensure that a node does not need a restart to clean up after
+        background validation completed
         """
-        msg = []
-        if assumeutxo_used:
-            # Check that the snapshot actually existed before restart
-            assert (node.datadir_path / node.chain / "chainstate_snapshot").exists()
-            msg = ["cleaning up unneeded background chainstate"]
+        chain_path = node.datadir_path / node.chain
+        assert not (chain_path / "chainstate_snapshot").exists()
+        assert not (chain_path / "chainstate_verify").exists()
+        assert not (chain_path / "chainstate" / "unvalidated_base_blockhash").exists()
 
-        with node.assert_debug_log(msg):
+        with node.assert_debug_log([], unexpected_msgs=["[snapshot]"]):
             yield
-
-        assert not (node.datadir_path / node.chain / "chainstate_snapshot").exists()
 
     def run_test(self):
         """
@@ -703,7 +702,7 @@ class AssumeutxoTest(BitcoinTestFramework):
         for i in (0, 1):
             n = self.nodes[i]
             self.log.info(f"Restarting node {i} to ensure (Check|Load)BlockIndex passes")
-            with self.assert_disk_cleanup(n, i == 1):
+            with self.assert_disk_cleanup(n):
                 self.restart_node(i, extra_args=self.extra_args[i])
 
             assert_equal(n.getblockchaininfo()["blocks"], FINAL_HEIGHT)
@@ -781,7 +780,7 @@ class AssumeutxoTest(BitcoinTestFramework):
         for i in (0, 2):
             n = self.nodes[i]
             self.log.info(f"Restarting node {i} to ensure (Check|Load)BlockIndex passes")
-            with self.assert_disk_cleanup(n, i == 2):
+            with self.assert_disk_cleanup(n):
                 self.restart_node(i, extra_args=self.extra_args[i])
 
             assert_equal(n.getblockchaininfo()["blocks"], FINAL_HEIGHT)

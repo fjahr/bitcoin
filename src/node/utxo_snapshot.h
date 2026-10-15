@@ -27,8 +27,6 @@
 // UTXO set snapshot magic bytes
 inline constexpr std::array<uint8_t, 5> SNAPSHOT_MAGIC_BYTES = {'u', 't', 'x', 'o', 0xff};
 
-class Chainstate;
-
 namespace node {
 //! Metadata describing a serialized version of a UTXO set from which an
 //! assumeutxo Chainstate can be constructed.
@@ -105,27 +103,35 @@ public:
     }
 };
 
-//! The file in the snapshot chainstate dir which stores the base blockhash. This is
-//! needed to reconstruct snapshot chainstates on init.
-//!
-//! Because we only allow loading a single snapshot at a time, there will only be one
-//! chainstate directory with this filename present within it.
+//! The file in the chainstate dir which stores the base blockhash of the
+//! snapshot the chainstate is based on, as long as the snapshot is not
+//! validated yet.
+inline const fs::path UNVALIDATED_SNAPSHOT_BLOCKHASH_FILENAME{"unvalidated_base_blockhash"};
+
+//! The file in the snapshot chainstate dir of older versions which stores the
+//! base blockhash. It was kept after the snapshot was validated.
 inline const fs::path SNAPSHOT_BLOCKHASH_FILENAME{"base_blockhash"};
 
-//! Write out the blockhash of the snapshot base block that was used to construct
-//! this chainstate. This value is read in during subsequent initializations and
-//! used to reconstruct snapshot-based chainstates.
-bool WriteSnapshotBaseBlockhash(Chainstate& snapshot_chainstate)
+//! Write out the blockhash of the base block of the snapshot a chainstate is
+//! based on to the given file.
+bool WriteSnapshotBaseBlockhash(const fs::path& path, const uint256& base_blockhash);
+
+//! Read the blockhash of the base block of the snapshot a chainstate is based
+//! on from the given file.
+std::optional<uint256> ReadSnapshotBaseBlockhash(const fs::path& path)
     EXCLUSIVE_LOCKS_REQUIRED(::cs_main);
 
-//! Read the blockhash of the snapshot base block that was used to construct the
-//! chainstate.
-std::optional<uint256> ReadSnapshotBaseBlockhash(fs::path chaindir)
-    EXCLUSIVE_LOCKS_REQUIRED(::cs_main);
-
-//! Suffix appended to the chainstate (leveldb) dir when created based upon
-//! a snapshot.
+//! Suffix appended to the chainstate (leveldb) dir a snapshot is loaded into
+//! before it replaces the chainstate.
 inline constexpr std::string_view SNAPSHOT_CHAINSTATE_SUFFIX = "_snapshot";
+
+//! Suffix appended to the chainstate (leveldb) dir of the coins database that
+//! replays the chain from genesis to validate a snapshot.
+inline constexpr std::string_view HISTORICAL_CHAINSTATE_SUFFIX = "_verify";
+
+//! Suffix the historical chainstate dir is renamed to when the snapshot turned
+//! out to be invalid. It replaces the chainstate on the next startup.
+inline constexpr std::string_view FALLBACK_CHAINSTATE_SUFFIX = "_fallback";
 
 
 //! Return a path to the snapshot-based chainstate dir, if one exists.

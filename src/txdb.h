@@ -57,6 +57,9 @@ public:
 
     //! Whether an unsupported database format is used.
     bool NeedsUpgrade();
+
+    //! Whether the database is only kept in memory.
+    bool IsMemoryOnly() const { return m_db_params.memory_only; }
     size_t EstimateSize() const override;
 
     //! Dynamically alter the underlying leveldb cache size.

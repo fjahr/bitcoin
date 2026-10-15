@@ -58,6 +58,7 @@
 #include <node/chainstate.h>
 #include <node/chainstatemanager_args.h>
 #include <node/context.h>
+#include <node/historical_verify.h>
 #include <node/interface_ui.h>
 #include <node/kernel_notifications.h>
 #include <node/mempool_args.h>
@@ -305,6 +306,7 @@ void Interrupt(NodeContext& node)
     for (auto* index : node.indexes) {
         index->Interrupt();
     }
+    if (node.historical_verifier) node.historical_verifier->Interrupt();
 }
 
 void Shutdown(NodeContext& node)
@@ -347,6 +349,10 @@ void Shutdown(NodeContext& node)
     }
 
     if (node.background_init_thread.joinable()) node.background_init_thread.join();
+    if (node.historical_verifier) {
+        node.historical_verifier->Interrupt();
+        node.historical_verifier->Stop();
+    }
     // After everything has been shut down, but before things get flushed, stop the
     // the scheduler. After this point, SyncWithValidationInterfaceQueue() should not be called anymore
     // as this would prevent the shutdown from completing.
@@ -397,6 +403,7 @@ void Shutdown(NodeContext& node)
     // Callbacks queued by this final chainstate flush will not run during shutdown
     if (node.chainman) {
         LOCK(cs_main);
+        node.chainman->ResetHistoricalCoins();
         for (const auto& chainstate : node.chainman->m_chainstates) {
             if (chainstate->CanFlushToDisk()) {
                 chainstate->ForceFlushStateToDisk();
@@ -425,6 +432,7 @@ void Shutdown(NodeContext& node)
     node.fee_estimator_man.reset();
     node.block_template_manager.reset();
     node.mempool.reset();
+    node.historical_verifier.reset();
     node.chainman.reset();
     node.validation_signals.reset();
     node.scheduler.reset();
@@ -1463,17 +1471,6 @@ static ChainstateLoadResult InitAndLoadChainstate(
             LogInfo("[snapshot] re-enabling NODE_NETWORK services");
             node.connman->AddLocalServices(NODE_NETWORK);
         }
-        LogInfo("[snapshot] restarting indexes");
-        // Drain the validation interface queue to ensure that the old indexes
-        // don't have any pending work.
-        Assert(node.validation_signals)->SyncWithValidationInterfaceQueue();
-        for (auto* index : node.indexes) {
-            index->Interrupt();
-            index->Stop();
-            if (!(index->Init() && index->StartBackgroundSync())) {
-                LogWarning("[snapshot] Failed to restart index %s on snapshot chain", index->GetName());
-            }
-        }
     };
     node::ChainstateLoadOptions options;
     options.mempool = Assert(node.mempool.get());
@@ -1972,6 +1969,7 @@ bool AppInitMain(NodeContext& node, interfaces::BlockAndHeaderTipInfo* tip_info)
     }
 
     ChainstateManager& chainman = *Assert(node.chainman);
+    node.historical_verifier = std::make_unique<node::HistoricalReplayVerifier>(chainman);
 
     assert(!node.fee_estimator_man);
     // Don't initialize fee estimation with old data if we don't relay transactions,
@@ -2045,7 +2043,7 @@ bool AppInitMain(NodeContext& node, interfaces::BlockAndHeaderTipInfo* tip_info)
         }
     } else {
         // Prior to setting NODE_NETWORK, check if we can provide historical blocks.
-        if (!WITH_LOCK(chainman.GetMutex(), return chainman.HistoricalChainstate())) {
+        if (!WITH_LOCK(chainman.GetMutex(), return chainman.AssumedValidBase())) {
             LogInfo("Setting NODE_NETWORK in non-prune mode");
             g_local_services = ServiceFlags(g_local_services | NODE_NETWORK);
         } else {
@@ -2141,6 +2139,11 @@ bool AppInitMain(NodeContext& node, interfaces::BlockAndHeaderTipInfo* tip_info)
                 LogError("Failed to send shutdown signal after finishing block import\n");
             }
             return;
+        }
+
+        // Validate the snapshot the chainstate is based on, if any
+        if (WITH_LOCK(::cs_main, return chainman.AssumedValidBase())) {
+            node.historical_verifier->Start();
         }
 
         // Start indexes initial sync
@@ -2455,12 +2458,13 @@ bool AppInitMain(NodeContext& node, interfaces::BlockAndHeaderTipInfo* tip_info)
 bool StartIndexBackgroundSync(NodeContext& node)
 {
     ChainstateManager& chainman = *Assert(node.chainman);
-    const Chainstate& chainstate = WITH_LOCK(::cs_main, return chainman.ValidatedChainstate());
+    const Chainstate& chainstate = WITH_LOCK(::cs_main, return chainman.CurrentChainstate());
     const CChain& index_chain = chainstate.m_chain;
-    const int current_height = WITH_LOCK(::cs_main, return index_chain.Height());
+    // Indexes can only sync up to the last block validated from genesis.
+    const CBlockIndex* validated_tip{WITH_LOCK(::cs_main, return chainman.ValidatedTip())};
 
     // Skip checking data availability if we have not synced any blocks yet
-    if (current_height > 0) {
+    if (validated_tip && validated_tip->nHeight > 0) {
         // Before starting index sync, verify that all required block data is available
         // on disk from each index's current sync position up to the chain tip.
         //
@@ -2510,7 +2514,8 @@ bool StartIndexBackgroundSync(NodeContext& node)
         // Verify all blocks needed to sync to current tip are present including undo data.
         if (undo_start) {
             LOCK(::cs_main);
-            if (!chainman.m_blockman.CheckBlockDataAvailability(*index_chain.Tip(), *Assert(undo_start.value()), BlockStatus{BLOCK_HAVE_DATA | BLOCK_HAVE_UNDO})) {
+            if (undo_start.value()->nHeight <= validated_tip->nHeight &&
+                !chainman.m_blockman.CheckBlockDataAvailability(*validated_tip, *Assert(undo_start.value()), BlockStatus{BLOCK_HAVE_DATA | BLOCK_HAVE_UNDO})) {
                 return InitError(Untranslated(strprintf("%s best block of the index goes beyond pruned data (including undo data). Please disable the index or reindex (which will download the whole blockchain again)", undo_start_name)));
             }
         }
@@ -2518,7 +2523,8 @@ bool StartIndexBackgroundSync(NodeContext& node)
         // Verify all blocks needed to sync to current tip are present unless we already checked all of them above.
         if (block_start && !(undo_start && undo_start.value()->nHeight <= block_start.value()->nHeight)) {
             LOCK(::cs_main);
-            if (!chainman.m_blockman.CheckBlockDataAvailability(*index_chain.Tip(), *Assert(block_start.value()), BlockStatus{BLOCK_HAVE_DATA})) {
+            if (block_start.value()->nHeight <= validated_tip->nHeight &&
+                !chainman.m_blockman.CheckBlockDataAvailability(*validated_tip, *Assert(block_start.value()), BlockStatus{BLOCK_HAVE_DATA})) {
                 return InitError(Untranslated(strprintf("%s best block of the index goes beyond pruned data. Please disable the index or reindex (which will download the whole blockchain again)", block_start_name)));
             }
         }

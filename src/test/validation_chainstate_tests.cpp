@@ -98,10 +98,7 @@ BOOST_FIXTURE_TEST_CASE(connect_tip_does_not_cache_inputs_on_failed_connect, Tes
     BOOST_CHECK(!chainstate.CoinsTip().HaveCoinInCache(outpoint));    // input not cached
 }
 
-//! Test UpdateTip behavior for both active and background chainstates.
-//!
-//! When run on the background chainstate, UpdateTip should do a subset
-//! of what it does for the active chainstate.
+//! Test that validating a snapshot in the background does not update the tip.
 BOOST_FIXTURE_TEST_CASE(chainstate_update_tip, TestChain100Setup)
 {
     ChainstateManager& chainman = *Assert(m_node.chainman);
@@ -119,7 +116,7 @@ BOOST_FIXTURE_TEST_CASE(chainstate_update_tip, TestChain100Setup)
     // After adding some blocks to the tip, best block should have changed.
     BOOST_CHECK(get_notify_tip() != curr_tip);
 
-    // Grab block 1 from disk; we'll add it to the background chain later.
+    // Grab block 1 from disk; we'll validate it in the background later.
     std::shared_ptr<CBlock> pblockone = std::make_shared<CBlock>();
     {
         LOCK(::cs_main);
@@ -142,34 +139,15 @@ BOOST_FIXTURE_TEST_CASE(chainstate_update_tip, TestChain100Setup)
 
     curr_tip = get_notify_tip();
 
-    Chainstate& background_cs{*Assert(WITH_LOCK(::cs_main, return chainman.HistoricalChainstate()))};
+    // Receive the first block again, now that it is not available anymore.
+    BOOST_CHECK(chainman.ProcessNewBlock(pblockone, /*force_processing=*/true, /*min_pow_checked=*/true, /*new_block=*/nullptr));
 
-    // Append the first block to the background chain.
-    BlockValidationState state;
-    CBlockIndex* pindex = nullptr;
-    const CChainParams& chainparams = Params();
-    bool newblock = false;
+    // Validate it in the background.
+    BOOST_CHECK(chainman.AdvanceHistoricalChain() == ChainstateManager::HistoricalStep::PROGRESS);
+    BOOST_CHECK_EQUAL(WITH_LOCK(::cs_main, return chainman.GetHistoricalBlockRange()->first->GetBlockHash()), pblockone->GetHash());
 
-    // TODO: much of this is inlined from ProcessNewBlock(); just reuse PNB()
-    // once it is changed to support multiple chainstates.
-    {
-        LOCK(::cs_main);
-        bool checked = CheckBlock(*pblockone, state, chainparams.GetConsensus());
-        BOOST_CHECK(checked);
-        bool accepted = chainman.AcceptBlock(
-            pblockone, state, &pindex, true, nullptr, &newblock, true);
-        BOOST_CHECK(accepted);
-    }
-
-    // UpdateTip is called here
-    bool block_added = background_cs.ActivateBestChain(state, pblockone);
-
-    // Ensure tip is as expected
-    BOOST_CHECK_EQUAL(background_cs.m_chain.Tip()->GetBlockHash(), pblockone->GetHash());
-
-    // get_notify_tip() should be unchanged after adding a block to the background
-    // validation chain.
-    BOOST_CHECK(block_added);
+    // get_notify_tip() should be unchanged after validating a block in the
+    // background.
     BOOST_CHECK_EQUAL(curr_tip, get_notify_tip());
 }
 

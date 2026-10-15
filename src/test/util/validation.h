@@ -51,6 +51,8 @@ struct TestChainstateManager : public ChainstateManager {
     void InvalidChainFound(CBlockIndex* pindexNew) EXCLUSIVE_LOCKS_REQUIRED(cs_main);
     CBlockIndex* FindMostWorkChain() EXCLUSIVE_LOCKS_REQUIRED(cs_main);
     void ResetBestInvalid() EXCLUSIVE_LOCKS_REQUIRED(cs_main);
+    /** Access the coins database validating a snapshot */
+    CCoinsViewCache& HistoricalCoinsTip() EXCLUSIVE_LOCKS_REQUIRED(cs_main);
 };
 
 class ValidationInterfaceTest

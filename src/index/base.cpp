@@ -48,6 +48,8 @@ constexpr uint8_t DB_BEST_BLOCK{'B'};
 
 constexpr auto SYNC_LOG_INTERVAL{30s};
 constexpr auto SYNC_LOCATOR_WRITE_INTERVAL{30s};
+//! How long to wait before checking again whether the next block was validated in the background.
+constexpr auto BACKGROUND_VALIDATION_POLL_INTERVAL{100ms};
 
 template <typename... Args>
 void BaseIndex::FatalErrorf(util::ConstevalFormatString<sizeof...(Args)> fmt, const Args&... args)
@@ -112,7 +114,7 @@ bool BaseIndex::Init()
     // m_chainstate member gives indexing code access to node internals. It is
     // removed in followup https://github.com/bitcoin/bitcoin/pull/24230
     m_chainstate = WITH_LOCK(::cs_main,
-                             return &m_chain->context()->chainman->ValidatedChainstate());
+                             return &m_chain->context()->chainman->CurrentChainstate());
     // Register to validation interface before setting the 'm_synced' flag, so that
     // callbacks are not missed once m_synced is true.
     m_chain->context()->validation_signals->RegisterValidationInterface(this);
@@ -143,7 +145,7 @@ bool BaseIndex::Init()
     // Note: this will latch to true immediately if the user starts up with an empty
     // datadir and an index enabled. If this is the case, indexation will happen solely
     // via `BlockConnected` signals until, possibly, the next restart.
-    m_synced = start_block == index_chain.Tip();
+    m_synced = start_block == index_chain.Tip() && !m_chainstate->m_chainman.AssumedValidBase();
     m_init = true;
     return true;
 }
@@ -238,10 +240,24 @@ void BaseIndex::Sync()
                 // indexed.
                 LOCK(::cs_main);
                 pindex_next = NextSyncBlock(pindex, m_chainstate->m_chain);
-                if (!pindex_next) {
+                if (!pindex_next && !m_chainstate->m_chainman.AssumedValidBase()) {
                     m_synced = true;
                     break;
                 }
+            }
+            // While the chainstate is based on a snapshot that is not validated
+            // yet, wait for blocks to be validated in the background before
+            // indexing them.
+            const CBlockIndex* validated_tip{WITH_LOCK(::cs_main, return m_chainstate->m_chainman.ValidatedTip())};
+            if (!pindex_next || !validated_tip || validated_tip->GetAncestor(pindex_next->nHeight) != pindex_next) {
+                SetBestBlockIndex(pindex);
+                if (NodeClock::now() - last_locator_write_time >= SYNC_LOCATOR_WRITE_INTERVAL) {
+                    last_locator_write_time = NodeClock::now();
+                    // No need to handle errors in Commit. See rationale above.
+                    Commit();
+                }
+                m_interrupt.sleep_for(BACKGROUND_VALIDATION_POLL_INTERVAL);
+                continue;
             }
             if (pindex_next->pprev != pindex && !Rewind(pindex, pindex_next->pprev)) {
                 FatalErrorf("Failed to rewind %s to a previous chain tip", GetName());

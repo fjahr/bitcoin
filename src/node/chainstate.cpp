@@ -73,12 +73,13 @@ static ChainstateLoadResult CompleteChainstateInitialization(
     assert(chainman.m_total_coinstip_cache > 0);
     assert(chainman.m_total_coinsdb_cache > 0);
 
-    // If running with multiple chainstates, limit the cache sizes with a
-    // discount factor. If discounted the actual cache size will be
-    // recalculated by `chainman.MaybeRebalanceCaches()`. The discount factor
-    // is conservatively chosen such that the sum of the caches does not exceed
-    // the allowable amount during this temporary initialization state.
-    double init_cache_fraction = chainman.HistoricalChainstate() ? 0.2 : 1.0;
+    // If validating a snapshot, limit the cache sizes with a discount factor,
+    // which also applies to the historical coins database. If discounted the
+    // actual cache size will be recalculated by `chainman.MaybeRebalanceCaches()`.
+    // The discount factor is conservatively chosen such that the sum of the
+    // caches does not exceed the allowable amount during this temporary
+    // initialization state.
+    double init_cache_fraction = chainman.AssumedValidBase() ? 0.2 : 1.0;
 
     // At this point we're either in reindex or we've loaded a useful
     // block tree into BlockIndex()!
@@ -124,6 +125,10 @@ static ChainstateLoadResult CompleteChainstateInitialization(
             }
             assert(chainstate->m_chain.Tip() != nullptr);
         }
+    }
+
+    if (auto res{chainman.LoadHistoricalCoins(options.coins_db_in_memory, options.coins_error_cb)}; !res) {
+        return {ChainstateLoadStatus::FAILURE, util::ErrorString(res)};
     }
 
     // Populate setBlockIndexCandidates in a separate loop, after all LoadChainTip()
@@ -172,66 +177,19 @@ ChainstateLoadResult LoadChainstate(ChainstateManager& chainman, const CacheSize
     chainman.m_total_coinstip_cache = cache_sizes.coins;
     chainman.m_total_coinsdb_cache = cache_sizes.coins_db;
 
-    // Load the fully validated chainstate.
-    Chainstate& validated_cs{chainman.InitializeChainstate(options.mempool)};
-
-    // Load a chain created from a UTXO snapshot, if any exist.
-    Chainstate* assumeutxo_cs{chainman.LoadAssumeutxoChainstate()};
-
-    if (assumeutxo_cs && options.wipe_chainstate_db) {
-        // Reset chainstate target to network tip instead of snapshot block.
-        validated_cs.SetTargetBlock(nullptr);
-        LogInfo("[snapshot] deleting snapshot chainstate due to reindexing");
-        if (!chainman.DeleteChainstate(*assumeutxo_cs)) {
-            return {ChainstateLoadStatus::FAILURE_FATAL, Untranslated("Couldn't remove snapshot chainstate.")};
-        }
-        assumeutxo_cs = nullptr;
+    // Complete or clean up after an interrupted activation, validation or
+    // invalidation of a snapshot, and find out if the chainstate is based on
+    // one that is not validated yet.
+    auto snapshot_blockhash{chainman.LoadAssumeutxoState(/*wipe=*/options.wipe_chainstate_db)};
+    if (!snapshot_blockhash) {
+        if (chainman.m_interrupt) return {ChainstateLoadStatus::INTERRUPTED, {}};
+        return {ChainstateLoadStatus::FAILURE_FATAL, util::ErrorString(snapshot_blockhash)};
     }
+    chainman.InitializeChainstate(options.mempool, *snapshot_blockhash);
 
     auto [init_status, init_error] = CompleteChainstateInitialization(chainman, options);
     if (init_status != ChainstateLoadStatus::SUCCESS) {
         return {init_status, init_error};
-    }
-
-    // If a snapshot chainstate was fully validated by a background chainstate during
-    // the last run, detect it here and clean up the now-unneeded background
-    // chainstate.
-    //
-    // Why is this cleanup done here (on subsequent restart) and not just when the
-    // snapshot is actually validated? Because this entails unusual
-    // filesystem operations to move leveldb data directories around, and that seems
-    // too risky to do in the middle of normal runtime.
-    auto snapshot_completion{assumeutxo_cs
-                             ? chainman.MaybeValidateSnapshot(validated_cs, *assumeutxo_cs)
-                             : SnapshotCompletionResult::SKIPPED};
-
-    if (snapshot_completion == SnapshotCompletionResult::SKIPPED) {
-        // do nothing; expected case
-    } else if (snapshot_completion == SnapshotCompletionResult::SUCCESS) {
-        LogInfo("[snapshot] cleaning up unneeded background chainstate, then reinitializing");
-        if (!chainman.ValidatedSnapshotCleanup(validated_cs, *assumeutxo_cs)) {
-            return {ChainstateLoadStatus::FAILURE_FATAL, Untranslated("Background chainstate cleanup failed unexpectedly.")};
-        }
-
-        // Because ValidatedSnapshotCleanup() has torn down chainstates with
-        // ChainstateManager::ResetChainstates(), reinitialize them here without
-        // duplicating the blockindex work above.
-        assert(chainman.m_chainstates.empty());
-
-        chainman.InitializeChainstate(options.mempool);
-
-        // A reload of the block index is required to recompute setBlockIndexCandidates
-        // for the fully validated chainstate.
-        chainman.ActiveChainstate().ClearBlockIndexCandidates();
-
-        auto [init_status, init_error] = CompleteChainstateInitialization(chainman, options);
-        if (init_status != ChainstateLoadStatus::SUCCESS) {
-            return {init_status, init_error};
-        }
-    } else {
-        return {ChainstateLoadStatus::FAILURE_FATAL, _(
-           "UTXO snapshot failed to validate. "
-           "Restart to resume normal initial block download, or try loading a different snapshot.")};
     }
 
     return {ChainstateLoadStatus::SUCCESS, {}};

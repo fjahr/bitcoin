@@ -82,7 +82,7 @@ CreateAndActivateUTXOSnapshot(
             Chainstate& chain = node.chainman->ActiveChainstate();
             Assert(node.chainman->LoadGenesisBlock());
             // These cache values will be corrected shortly in `MaybeRebalanceCaches`.
-            chain.InitCoinsDB(1_MiB, /*in_memory=*/true, /*should_wipe=*/false);
+            chain.InitCoinsDB(1_MiB, /*in_memory=*/fixture->m_coins_db_in_memory, /*should_wipe=*/true);
             chain.InitCoinsCache(1_MiB);
             chain.CoinsTip().SetBestBlock(gen_hash);
             chain.LoadChainTip();
@@ -130,8 +130,8 @@ CreateAndActivateUTXOSnapshot(
 
     auto res = node.chainman->ActivateSnapshot(auto_infile, metadata, in_memory_chainstate);
 
-    // Restore the old tip.
-    new_active.m_chain.SetTip(*tip);
+    // Restore the old tip, unless the chainstate moved to the snapshot base.
+    if (!res) new_active.m_chain.SetTip(*tip);
     return !!res;
 }
 
