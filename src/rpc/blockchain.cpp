@@ -3628,7 +3628,7 @@ return RPCMethod{
         RPCResult{
             RPCResult::Type::OBJ, "", "", {
                 {RPCResult::Type::NUM, "headers", "the number of headers seen so far"},
-                {RPCResult::Type::ARR, "chainstates", "list of the chainstates ordered by work, with the most-work (active) chainstate last", {{RPCResult::Type::OBJ, "", "", RPCHelpForChainstate},}},
+                {RPCResult::Type::ARR, "chainstates", "list of the chainstates ordered by work, with the most-work (active) chainstate last. While the active chainstate is based on a snapshot that is not validated yet, the first entry describes the validation of the blocks leading up to it in the background", {{RPCResult::Type::OBJ, "", "", RPCHelpForChainstate},}},
             }
         },
         RPCExamples{

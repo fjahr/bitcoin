@@ -18,110 +18,128 @@ For notes on the usage of Assumeutxo, please refer to [the usage doc](/doc/assum
   a pruned chain.
 
   Logic outside ChainstateManager should try not to know about snapshots, instead
-  preferring to work in terms of more general states like assumed-valid.
+  preferring to work in terms of more general states like assumed-valid. It asks
+  `AssumedValidBase()` whether the chainstate is based on a snapshot that is not
+  validated yet, `GetHistoricalBlockRange()` which blocks before it still have to
+  be downloaded, and `ValidatedTip()` up to which block the chain was connected
+  starting from the genesis block.
 
+- There is only one `Chainstate`. Loading a snapshot replaces its UTXO set. The
+  previous UTXO set is kept in a separate coins database, the historical coins,
+  and `ChainstateManager::AdvanceHistoricalChain()` connects the blocks leading up
+  to the snapshot base to it, one at a time and in order. There is no chain
+  selection involved since the blocks are the ancestors of the snapshot base. No
+  validation interface notifications are sent for them except `BlockChecked`.
 
-## Chainstate phases
+- `node::HistoricalReplayVerifier` advances the historical coins on its own thread
+  (`b-histverify`). Once they reach the snapshot base, it calls
+  `ChainstateManager::ValidateSnapshot()`, which hashes them without holding
+  `cs_main`.
 
-Chainstate within the system goes through a number of phases when UTXO snapshots are
-used, as managed by `ChainstateManager`. At various points there can be multiple
-`Chainstate` objects in existence to facilitate both maintaining the network tip and
-performing historical validation of the assumed-valid chain.
-
-It is worth noting that though there are multiple separate chainstates, those
-chainstates share use of a common block index (i.e. they hold the same `BlockManager`
-reference).
-
-The subheadings below outline the phases and the corresponding changes to chainstate
-data.
+## Phases
 
 ### "Normal" operation via initial block download
 
-`ChainstateManager` manages a single Chainstate object, for which
-`m_from_snapshot_blockhash` is `std::nullopt`. This chainstate is (maybe obviously)
-considered active. This is the "traditional" mode of operation for bitcoind.
+`m_from_snapshot_blockhash` of the chainstate is `std::nullopt` and there are no
+historical coins. This is the "traditional" mode of operation for bitcoind.
 
-|    |    |
+| directory | contents |
 | ---------- | ----------- |
-| number of chainstates | 1 |
-| active chainstate | ibd |
+| `chainstate` | UTXO set of the chainstate |
 
 ### User loads a UTXO snapshot via `loadtxoutset` RPC
 
-`ChainstateManager` initializes a new chainstate (see `ActivateSnapshot()`) to load the
-snapshot contents into. During snapshot load and validation (see
-`PopulateAndValidateSnapshot()`), the new chainstate is not considered active and the
-original chainstate remains in use as active.
+`ActivateSnapshot()` loads the snapshot into a separate coins database in
+`chainstate_snapshot` (see `PopulateAndValidateSnapshot()`). The chainstate keeps
+using its own coins database in the meantime.
 
-|    |    |
+Once the snapshot is loaded and its hash matches the compiled value in
+`CMainParams::m_assumeutxo_data`, the base blockhash is written to
+`chainstate_snapshot/unvalidated_base_blockhash` and the coins databases are
+swapped while holding `cs_main`. `chainstate` is renamed to `chainstate_verify`
+and `chainstate_snapshot` to `chainstate`. Then the tip of the chainstate jumps to
+the snapshot base. The ancestors of the snapshot base get `BLOCK_OPT_WITNESS`, so
+that `NeedsRedownload()` doesn't ask for `-reindex` on startup, and the snapshot
+base gets the `m_chain_tx_count` from the chainparams.
+
+| directory | contents |
 | ---------- | ----------- |
-| number of chainstates | 2 |
-| active chainstate | ibd |
+| `chainstate` | UTXO set of the chainstate, based on the snapshot, and `unvalidated_base_blockhash` |
+| `chainstate_verify` | historical coins, which were the UTXO set of the chainstate before |
 
-Once the snapshot chainstate is loaded and validated, it is promoted to active
-chainstate and a sync to tip begins. A new chainstate directory is created in the
-datadir for the snapshot chainstate called `chainstate_snapshot`.
+`unvalidated_base_blockhash` marks the chainstate as based on a snapshot that is
+not validated yet. On startup, `LoadAssumeutxoState()` reads it, and the
+historical coins are loaded from `chainstate_verify`. If the node shuts down while
+the snapshot is loaded, `LoadAssumeutxoState()` removes `chainstate_snapshot` on the
+next startup. If it shuts down during the swap, it completes the swap.
 
-When this directory is present in the datadir, the snapshot chainstate will be detected
-and loaded as active on node startup (via `LoadAssumeutxoChainstate()`).
+### Snapshot chainstate syncs to the tip
 
-A special file is created within that directory, `base_blockhash`, which contains the
-serialized `uint256` of the base block of the snapshot. This is used to reinitialize
-the snapshot chainstate on subsequent inits. Otherwise, the directory is a normal
-leveldb database.
+The chainstate syncs to the network tip from the snapshot base and gets most of the
+cache while it is in initial block download (see `MaybeRebalanceCaches()`). Blocks
+before the snapshot base are downloaded as well and connected to the historical
+coins as they arrive. If the historical coins follow a branch that does not lead to
+the snapshot base, for example because the node synced a stale branch before loading
+the snapshot, blocks are disconnected from them until they are back on the path to
+the snapshot base. If that fails, the replay starts over from the genesis block.
 
-|    |    |
-| ---------- | ----------- |
-| number of chainstates | 2 |
-| active chainstate | snapshot |
+Once the chainstate leaves initial block download, most of the cache goes to the
+historical coins.
 
-The snapshot begins to sync to tip from its base block, technically in parallel with
-the original chainstate, but it is given priority during block download and is
-allocated most of the cache (see `MaybeRebalanceCaches()` and usages) as our chief
-goal is getting to network tip.
+A prune lock named `assumeutxo` keeps the blocks from the historical coins tip, as
+written to disk, to the snapshot base from being pruned. The chainstate can prune
+the blocks before and after them. Blocks after the snapshot base are stored in
+separate block files (`BlockfileType::ASSUMED`), because they are downloaded at the
+same time as the blocks before it and pruning works on whole files.
 
-**Failure consideration:** if shutdown happens at any point during this phase, both
-chainstates will be detected during the next init and the process will resume.
+Indexes only index blocks up to `ValidatedTip()`, so they wait for the historical
+coins while those are behind, and they only consider themselves synced once the
+snapshot is validated. `loadtxoutset` restarts them because the chainstate tip jumps.
 
-### Snapshot chainstate hits network tip
+### Historical coins reach the snapshot base
 
-Once the snapshot chainstate leaves IBD, caches are rebalanced
-(via `MaybeRebalanceCaches()` in `ActivateBestChain()`) and more cache is given
-to the background chainstate, which is responsible for doing full validation of the
-assumed-valid parts of the chain.
-
-**Note:** at this point, ValidationInterface callbacks will be coming in from both
-chainstates. Considerations here must be made for indexing, which may no longer be happening
-sequentially.
-
-### Background chainstate hits snapshot base block
-
-Once the tip of the background chainstate hits the base block of the snapshot
-chainstate, we hash the
-background chainstate's UTXO set contents and ensure it matches the compiled value in
+`ValidateSnapshot()` hashes the historical coins and compares the hash to
 `CMainParams::m_assumeutxo_data`.
 
-|    |    |
+If it matches, the chainstate is marked `VALIDATED`, `unvalidated_base_blockhash` is
+removed and `chainstate_verify` is deleted. All of the cache goes to the chainstate,
+and `NODE_NETWORK` is signaled again by nodes that don't prune. A restart is not
+necessary. After the next one, the chainstate is indistinguishable from one built by
+the traditional IBD process. If the node shuts down before `chainstate_verify` is
+deleted, `LoadAssumeutxoState()` deletes it on the next startup.
+
+| directory | contents |
 | ---------- | ----------- |
-| number of chainstates | 2 |
-| active chainstate | snapshot |
+| `chainstate` | UTXO set of the chainstate |
 
-The background chainstate data lingers on disk until the program is restarted.
+If it doesn't match, which should not happen in practice, the chainstate is marked
+`INVALID`, `chainstate_verify` is renamed to `chainstate_fallback` and the node shuts
+down with a fatal error. On the next startup, `chainstate` is renamed to
+`chainstate_snapshot_INVALID` for diagnosis and `chainstate_fallback` to
+`chainstate`. The node then continues to sync from the snapshot base without using
+the snapshot.
 
-### Bitcoind restarts sometime after snapshot validation has completed
+### Datadirs of older versions
 
-After a shutdown and subsequent restart, `LoadChainstate()` cleans up the background
-chainstate with `ValidatedSnapshotCleanup()`, which renames the `chainstate_snapshot`
-datadir as `chainstate` and removes the now unnecessary background chainstate data.
+Older versions validated the snapshot with a second chainstate. While validating,
+`chainstate` contained the chainstate that was syncing from the genesis block, and
+`chainstate_snapshot` contained the snapshot chainstate and its base blockhash in
+`base_blockhash`. On startup, `LoadAssumeutxoState()` converts this layout like an
+interrupted swap.
 
-|    |    |
-| ---------- | ----------- |
-| number of chainstates | 1 |
-| active chainstate | ibd (was snapshot, but is now fully validated) |
+Once older versions validated the snapshot, they renamed `chainstate_snapshot` to
+`chainstate` on the next startup and left `base_blockhash` in it, which is ignored.
 
-What began as the snapshot chainstate is now indistinguishable from a chainstate that
-has been built from the traditional IBD process, and will be initialized as such.
+Older versions treat a chainstate that is still based on a snapshot as fully
+validated, so downgrading is not supported until the snapshot is validated.
 
-A file will be left in `chainstate/base_blockhash`, which indicates that the
-chainstate, even though now fully validated, was originally started from a snapshot
-with the corresponding base blockhash.
+## Invariants
+
+- The snapshot base is in `setBlockIndexCandidates` even if it doesn't have
+  `BLOCK_VALID_TRANSACTIONS`, because its block may not be downloaded yet.
+- Until all blocks before it are downloaded, the snapshot base is the only block
+  whose ancestors have not all been downloaded that has an `m_chain_tx_count`
+  (see `CheckBlockIndex()`).
+- The historical coins are only accessed while holding `cs_main`, except while
+  `ValidateSnapshot()` hashes them, during which they are not resized, written or
+  deleted.

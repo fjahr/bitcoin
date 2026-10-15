@@ -732,6 +732,9 @@ and its `cs_KeyStore` lock for example).
 - [Indexer threads (`b-txidx`, `b-blkfltbscidx`, `b-coinstatsidx`, `b-txospenderidx`)](https://doxygen.bitcoincore.org/class_base_index.html#index_sync)
   : One thread per indexer.
 
+- [HistoricalReplayVerifier (`b-histverify`)](https://doxygen.bitcoincore.org/classnode_1_1_historical_replay_verifier.html)
+  : Validates an assumeutxo snapshot by connecting the blocks leading up to it in the background.
+
 - [SchedulerThread (`b-scheduler`)](https://doxygen.bitcoincore.org/class_c_scheduler.html#scheduler)
   : Does asynchronous background tasks like dumping wallet contents, dumping
   addrman and running asynchronous validationinterface callbacks.

@@ -20,27 +20,30 @@ load it.
 $ bitcoin-cli -rpcclienttimeout=0 loadtxoutset /path/to/input
 ```
 
-After the snapshot has loaded, the syncing process of both the snapshot chain
-and the background IBD chain can be monitored with the `getchainstates` RPC.
+After the snapshot has loaded, the chainstate syncs to the tip from the snapshot
+block. In the background, the blocks leading up to the snapshot block are
+downloaded and validated to check that the snapshot is correct. Both can be
+monitored with the `getchainstates` RPC, which lists the background validation
+as a separate chainstate, and with the `backgroundvalidation` field of
+`getblockchaininfo`.
 
 ### Pruning
 
 A pruned node can load a snapshot. To save space, it's possible to delete the
 snapshot file as soon as `loadtxoutset` finishes.
 
-The minimum `-prune` setting is 550 MiB, but this functionality ignores that
-minimum and uses at least 1100 MiB.
+Blocks are only pruned once the background validation no longer needs them.
 
-As the background sync continues there will be temporarily two chainstate
-directories, each multiple gigabytes in size (likely growing larger than the
-downloaded snapshot).
+Until the snapshot is validated, the coins used by the background validation are
+kept in a separate `chainstate_verify` directory, which is multiple gigabytes in
+size (likely growing larger than the downloaded snapshot).
 
 ### Indexes
 
 Indexes work but don't take advantage of this feature. They always start building
-from the genesis block and can only apply blocks in order. Once the background
-validation reaches the snapshot block, indexes will continue to build all the
-way to the tip.
+from the genesis block and can only apply blocks in order, as they are validated
+in the background. Once the snapshot is validated, indexes will continue to build
+all the way to the tip.
 
 
 For indexes that support pruning, note that these indexes only allow blocks that
