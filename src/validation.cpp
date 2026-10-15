@@ -2177,6 +2177,11 @@ int ApplyTxInUndo(Coin&& undo, CCoinsViewCache& view, const COutPoint& out)
  *  When FAILED is returned, view is left in an indeterminate state. */
 DisconnectResult Chainstate::DisconnectBlock(const CBlock& block, const CBlockIndex* pindex, CCoinsViewCache& view)
 {
+    return m_chainman.DisconnectBlock(block, pindex, view);
+}
+
+DisconnectResult ChainstateManager::DisconnectBlock(const CBlock& block, const CBlockIndex* pindex, CCoinsViewCache& view)
+{
     AssertLockHeld(::cs_main);
     bool fClean = true;
 
@@ -2288,11 +2293,17 @@ script_verify_flags GetBlockScriptFlags(const CBlockIndex& block_index, const Ch
 }
 
 
-/** Apply the effects of this block (with given index) on the UTXO set represented by coins.
- *  Validity checks that depend on the UTXO set are also done; ConnectBlock()
- *  can fail if those validity checks fail (among other reasons). */
 bool Chainstate::ConnectBlock(const CBlock& block, BlockValidationState& state, CBlockIndex* pindex,
                                CCoinsViewCache& view, bool fJustCheck)
+{
+    const kernel::ChainstateRole role{GetRole()};
+    return m_chainman.ConnectBlock(block, state, pindex, view, fJustCheck,
+                                   role.validated && !role.historical ? &m_last_script_check_reason_logged : nullptr);
+}
+
+bool ChainstateManager::ConnectBlock(const CBlock& block, BlockValidationState& state, CBlockIndex* pindex,
+                                     CCoinsViewCache& view, bool fJustCheck,
+                                     std::optional<const char*>* last_script_check_reason_logged)
 {
     AssertLockHeld(cs_main);
     assert(pindex);
@@ -2301,7 +2312,7 @@ bool Chainstate::ConnectBlock(const CBlock& block, BlockValidationState& state, 
     assert(*pindex->phashBlock == block_hash);
 
     const auto time_start{SteadyClock::now()};
-    const CChainParams& params{m_chainman.GetParams()};
+    const CChainParams& params{GetParams()};
 
     // Check it again in case a previous version let a bad block in
     // NOTE: We don't currently (re-)invoke ContextualCheckBlock() or
@@ -2321,7 +2332,7 @@ bool Chainstate::ConnectBlock(const CBlock& block, BlockValidationState& state, 
             // We don't write down blocks to disk if they may have been
             // corrupted, so this should be impossible unless we're having hardware
             // problems.
-            return FatalError(m_chainman.GetNotifications(), state, _("Corrupt block found indicating potential hardware failure."));
+            return FatalError(GetNotifications(), state, _("Corrupt block found indicating potential hardware failure."));
         }
         LogError("%s: Consensus::CheckBlock: %s\n", __func__, state.ToString());
         return false;
@@ -2331,7 +2342,7 @@ bool Chainstate::ConnectBlock(const CBlock& block, BlockValidationState& state, 
     uint256 hashPrevBlock = pindex->pprev == nullptr ? uint256() : pindex->pprev->GetBlockHash();
     assert(hashPrevBlock == view.GetBestBlock());
 
-    m_chainman.num_blocks_total++;
+    num_blocks_total++;
 
     // Special case for the genesis block, skipping connection of its transactions
     // (its coinbase is unspendable)
@@ -2342,7 +2353,7 @@ bool Chainstate::ConnectBlock(const CBlock& block, BlockValidationState& state, 
     }
 
     const char* script_check_reason;
-    if (m_chainman.AssumedValidBlock().IsNull()) {
+    if (AssumedValidBlock().IsNull()) {
         script_check_reason = "assumevalid=0 (always verify)";
     } else {
         constexpr int64_t TWO_WEEKS_IN_SECONDS{60 * 60 * 24 * 7 * 2};
@@ -2351,16 +2362,16 @@ bool Chainstate::ConnectBlock(const CBlock& block, BlockValidationState& state, 
         //  relative to a piece of software is an objective fact these defaults can be easily reviewed.
         // This setting doesn't force the selection of any particular chain but makes validating some faster by
         //  effectively caching the result of part of the verification.
-        BlockMap::const_iterator it{m_blockman.m_block_index.find(m_chainman.AssumedValidBlock())};
+        BlockMap::const_iterator it{m_blockman.m_block_index.find(AssumedValidBlock())};
         if (it == m_blockman.m_block_index.end()) {
             script_check_reason = "assumevalid hash not in headers";
         } else if (it->second.GetAncestor(pindex->nHeight) != pindex) {
             script_check_reason = (pindex->nHeight > it->second.nHeight) ? "block height above assumevalid height" : "block not in assumevalid chain";
-        } else if (m_chainman.m_best_header->GetAncestor(pindex->nHeight) != pindex) {
+        } else if (m_best_header->GetAncestor(pindex->nHeight) != pindex) {
             script_check_reason = "block not in best header chain";
-        } else if (m_chainman.m_best_header->nChainWork < m_chainman.MinimumChainWork()) {
+        } else if (m_best_header->nChainWork < MinimumChainWork()) {
             script_check_reason = "best header chainwork below minimumchainwork";
-        } else if (GetBlockProofEquivalentTime(*m_chainman.m_best_header, *pindex, *m_chainman.m_best_header, params.GetConsensus()) <= TWO_WEEKS_IN_SECONDS) {
+        } else if (GetBlockProofEquivalentTime(*m_best_header, *pindex, *m_best_header, params.GetConsensus()) <= TWO_WEEKS_IN_SECONDS) {
             script_check_reason = "block too recent relative to best header";
         } else {
             // This block is a member of the assumed verified chain and an ancestor of the best header.
@@ -2382,11 +2393,11 @@ bool Chainstate::ConnectBlock(const CBlock& block, BlockValidationState& state, 
     }
 
     const auto time_1{SteadyClock::now()};
-    m_chainman.time_check += time_1 - time_start;
+    time_check += time_1 - time_start;
     LogDebug(BCLog::BENCH, "    - Sanity checks: %.2fms [%.2fs (%.2fms/blk)]\n",
              Ticks<MillisecondsDouble>(time_1 - time_start),
-             Ticks<SecondsDouble>(m_chainman.time_check),
-             Ticks<MillisecondsDouble>(m_chainman.time_check) / m_chainman.num_blocks_total);
+             Ticks<SecondsDouble>(time_check),
+             Ticks<MillisecondsDouble>(time_check) / num_blocks_total);
 
     // Do not allow blocks that contain transactions which 'overwrite' older transactions,
     // unless those are already completely spent.
@@ -2476,23 +2487,22 @@ bool Chainstate::ConnectBlock(const CBlock& block, BlockValidationState& state, 
 
     // Enforce BIP68 (sequence locks)
     int nLockTimeFlags = 0;
-    if (DeploymentActiveAt(*pindex, m_chainman, Consensus::DEPLOYMENT_CSV)) {
+    if (DeploymentActiveAt(*pindex, *this, Consensus::DEPLOYMENT_CSV)) {
         nLockTimeFlags |= LOCKTIME_VERIFY_SEQUENCE;
     }
 
     // Get the script flags for this block
-    script_verify_flags flags{GetBlockScriptFlags(*pindex, m_chainman)};
+    script_verify_flags flags{GetBlockScriptFlags(*pindex, *this)};
 
     const auto time_2{SteadyClock::now()};
-    m_chainman.time_forks += time_2 - time_1;
+    time_forks += time_2 - time_1;
     LogDebug(BCLog::BENCH, "    - Fork checks: %.2fms [%.2fs (%.2fms/blk)]\n",
              Ticks<MillisecondsDouble>(time_2 - time_1),
-             Ticks<SecondsDouble>(m_chainman.time_forks),
-             Ticks<MillisecondsDouble>(m_chainman.time_forks) / m_chainman.num_blocks_total);
+             Ticks<SecondsDouble>(time_forks),
+             Ticks<MillisecondsDouble>(time_forks) / num_blocks_total);
 
     const bool fScriptChecks{!!script_check_reason};
-    const kernel::ChainstateRole role{GetRole()};
-    if (script_check_reason != m_last_script_check_reason_logged && role.validated && !role.historical) {
+    if (last_script_check_reason_logged && script_check_reason != *last_script_check_reason_logged) {
         if (fScriptChecks) {
             LogInfo("Enabling script verification at block #%d (%s): %s.",
                     pindex->nHeight, block_hash.ToString(), script_check_reason);
@@ -2500,7 +2510,7 @@ bool Chainstate::ConnectBlock(const CBlock& block, BlockValidationState& state, 
             LogInfo("Disabling script verification at block #%d (%s).",
                     pindex->nHeight, block_hash.ToString());
         }
-        m_last_script_check_reason_logged = script_check_reason;
+        *last_script_check_reason_logged = script_check_reason;
     }
 
     CBlockUndo blockundo;
@@ -2512,7 +2522,7 @@ bool Chainstate::ConnectBlock(const CBlock& block, BlockValidationState& state, 
     // for as long as `control`.
     std::vector<PrecomputedTransactionData> txsdata(block.vtx.size());
     std::optional<CCheckQueueControl<CScriptCheck>> control;
-    if (auto& queue = m_chainman.GetCheckQueue(); queue.HasThreads() && fScriptChecks) control.emplace(queue);
+    if (auto& queue = GetCheckQueue(); queue.HasThreads() && fScriptChecks) control.emplace(queue);
 
     std::vector<int> prevheights;
     CAmount nFees = 0;
@@ -2578,10 +2588,10 @@ bool Chainstate::ConnectBlock(const CBlock& block, BlockValidationState& state, 
             // they need to be added to control which runs them asynchronously. Otherwise, CheckInputScripts runs the checks before returning.
             if (control) {
                 std::vector<CScriptCheck> vChecks;
-                tx_ok = CheckInputScripts(tx, tx_state, view, flags, fCacheResults, fCacheResults, txsdata[i], m_chainman.m_validation_cache, &vChecks);
+                tx_ok = CheckInputScripts(tx, tx_state, view, flags, fCacheResults, fCacheResults, txsdata[i], m_validation_cache, &vChecks);
                 if (tx_ok) control->Add(std::move(vChecks));
             } else {
-                tx_ok = CheckInputScripts(tx, tx_state, view, flags, fCacheResults, fCacheResults, txsdata[i], m_chainman.m_validation_cache);
+                tx_ok = CheckInputScripts(tx, tx_state, view, flags, fCacheResults, fCacheResults, txsdata[i], m_validation_cache);
             }
             if (!tx_ok) {
                 // Any transaction validation failure in ConnectBlock is a block consensus failure
@@ -2598,12 +2608,12 @@ bool Chainstate::ConnectBlock(const CBlock& block, BlockValidationState& state, 
         UpdateCoins(tx, view, i == 0 ? undoDummy : blockundo.vtxundo.back(), pindex->nHeight);
     }
     const auto time_3{SteadyClock::now()};
-    m_chainman.time_connect += time_3 - time_2;
+    time_connect += time_3 - time_2;
     LogDebug(BCLog::BENCH, "      - Connect %u transactions: %.2fms (%.3fms/tx, %.3fms/txin) [%.2fs (%.2fms/blk)]\n", (unsigned)block.vtx.size(),
              Ticks<MillisecondsDouble>(time_3 - time_2), Ticks<MillisecondsDouble>(time_3 - time_2) / block.vtx.size(),
              nInputs <= 1 ? 0 : Ticks<MillisecondsDouble>(time_3 - time_2) / (nInputs - 1),
-             Ticks<SecondsDouble>(m_chainman.time_connect),
-             Ticks<MillisecondsDouble>(m_chainman.time_connect) / m_chainman.num_blocks_total);
+             Ticks<SecondsDouble>(time_connect),
+             Ticks<MillisecondsDouble>(time_connect) / num_blocks_total);
 
     CAmount blockReward = nFees + GetBlockSubsidy(pindex->nHeight, params.GetConsensus());
     if (block.vtx[0]->GetValueOut() > blockReward && state.IsValid()) {
@@ -2621,12 +2631,12 @@ bool Chainstate::ConnectBlock(const CBlock& block, BlockValidationState& state, 
         return false;
     }
     const auto time_4{SteadyClock::now()};
-    m_chainman.time_verify += time_4 - time_2;
+    time_verify += time_4 - time_2;
     LogDebug(BCLog::BENCH, "    - Verify %u txins: %.2fms (%.3fms/txin) [%.2fs (%.2fms/blk)]\n", nInputs - 1,
              Ticks<MillisecondsDouble>(time_4 - time_2),
              nInputs <= 1 ? 0 : Ticks<MillisecondsDouble>(time_4 - time_2) / (nInputs - 1),
-             Ticks<SecondsDouble>(m_chainman.time_verify),
-             Ticks<MillisecondsDouble>(m_chainman.time_verify) / m_chainman.num_blocks_total);
+             Ticks<SecondsDouble>(time_verify),
+             Ticks<MillisecondsDouble>(time_verify) / num_blocks_total);
 
     if (fJustCheck) {
         return true;
@@ -2637,11 +2647,11 @@ bool Chainstate::ConnectBlock(const CBlock& block, BlockValidationState& state, 
     }
 
     const auto time_5{SteadyClock::now()};
-    m_chainman.time_undo += time_5 - time_4;
+    time_undo += time_5 - time_4;
     LogDebug(BCLog::BENCH, "    - Write undo data: %.2fms [%.2fs (%.2fms/blk)]\n",
              Ticks<MillisecondsDouble>(time_5 - time_4),
-             Ticks<SecondsDouble>(m_chainman.time_undo),
-             Ticks<MillisecondsDouble>(m_chainman.time_undo) / m_chainman.num_blocks_total);
+             Ticks<SecondsDouble>(time_undo),
+             Ticks<MillisecondsDouble>(time_undo) / num_blocks_total);
 
     if (!pindex->IsValid(BLOCK_VALID_SCRIPTS)) {
         pindex->RaiseValidity(BLOCK_VALID_SCRIPTS);
@@ -2652,11 +2662,11 @@ bool Chainstate::ConnectBlock(const CBlock& block, BlockValidationState& state, 
     view.SetBestBlock(pindex->GetBlockHash());
 
     const auto time_6{SteadyClock::now()};
-    m_chainman.time_index += time_6 - time_5;
+    time_index += time_6 - time_5;
     LogDebug(BCLog::BENCH, "    - Index writing: %.2fms [%.2fs (%.2fms/blk)]\n",
              Ticks<MillisecondsDouble>(time_6 - time_5),
-             Ticks<SecondsDouble>(m_chainman.time_index),
-             Ticks<MillisecondsDouble>(m_chainman.time_index) / m_chainman.num_blocks_total);
+             Ticks<SecondsDouble>(time_index),
+             Ticks<MillisecondsDouble>(time_index) / num_blocks_total);
 
     TRACEPOINT(validation, block_connected,
         block_hash.data(),

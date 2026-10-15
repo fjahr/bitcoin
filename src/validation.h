@@ -1319,6 +1319,23 @@ public:
     void ReceivedBlockTransactions(const CBlock& block, CBlockIndex* pindexNew, const FlatFilePos& pos) EXCLUSIVE_LOCKS_REQUIRED(cs_main);
 
     /**
+     * Apply the effects of this block (with given index) on the UTXO set represented by view.
+     * Validity checks that depend on the UTXO set are also done; ConnectBlock()
+     * can fail if those validity checks fail (among other reasons). The view
+     * does not have to belong to a Chainstate.
+     *
+     * @param[in,out] last_script_check_reason_logged  If non-null, log when script
+     *                                                 verification is enabled or disabled.
+     */
+    bool ConnectBlock(const CBlock& block, BlockValidationState& state, CBlockIndex* pindex,
+                      CCoinsViewCache& view, bool fJustCheck = false,
+                      std::optional<const char*>* last_script_check_reason_logged = nullptr) EXCLUSIVE_LOCKS_REQUIRED(cs_main);
+
+    //! Undo the effects of this block (with given index) on the UTXO set represented by view.
+    DisconnectResult DisconnectBlock(const CBlock& block, const CBlockIndex* pindex, CCoinsViewCache& view)
+        EXCLUSIVE_LOCKS_REQUIRED(::cs_main);
+
+    /**
      * Try to add a transaction to the memory pool.
      *
      * @param[in]  tx              The transaction to submit for mempool acceptance.
