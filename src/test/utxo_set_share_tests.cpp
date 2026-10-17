@@ -7,6 +7,7 @@
 #include <kernel/chainparams.h>
 #include <node/utxo_set_share.h>
 #include <node/utxo_snapshot.h>
+#include <primitives/transaction.h>
 #include <streams.h>
 #include <test/util/random.h>
 #include <test/util/setup_common.h>
@@ -109,6 +110,51 @@ BOOST_AUTO_TEST_CASE(merkle_proof_zero_chunks)
     uint256 root{m_rng.rand256()};
     std::vector<uint256> proof;
     BOOST_CHECK(!node::VerifyChunkMerkleProof(leaf, proof, 0, 0, root));
+}
+
+BOOST_AUTO_TEST_CASE(snapshot_chunk_roundtrip)
+{
+    // One transaction has more unspent outputs than fit in a chunk. Exercise
+    // CompactSize count transitions and vout indices above the VARINT ordering
+    // discontinuity, while decoding every chunk without its predecessor.
+    CMutableTransaction tx;
+    tx.vout.assign(50'000, CTxOut{1, CScript{} << OP_TRUE});
+    const auto txid{tx.GetHash()};
+    std::vector<std::pair<uint32_t, Coin>> coins;
+    for (uint32_t i{0}; i < tx.vout.size(); ++i) coins.emplace_back(i, Coin{tx.vout[i], 1, false});
+    const auto path{m_path_root / "chunks.dat"};
+    {
+        AutoFile file{fsbridge::fopen(path, "wb")};
+        node::SnapshotChunkWriter writer{file};
+        writer.WriteCoins(txid, coins);
+        writer.Flush();
+        BOOST_REQUIRE_EQUAL(file.fclose(), 0);
+    }
+    AutoFile file{fsbridge::fopen(path, "rb")};
+    size_t count{0};
+    size_t chunks{0};
+    while (count < coins.size()) {
+        auto chunk{node::ReadSnapshotChunk(file)};
+        BOOST_CHECK_LE(chunk.size(), node::SNAPSHOT_CHUNK_SIZE);
+        Txid chunk_txid;
+        chunk >> chunk_txid;
+        BOOST_CHECK(chunk_txid == txid);
+        const auto num{ReadCompactSize(chunk)};
+        BOOST_REQUIRE_GT(num, 0U);
+        for (size_t i{0}; i < num; ++i) {
+            BOOST_CHECK_EQUAL(ReadCompactSize(chunk), count);
+            Coin coin;
+            chunk >> coin;
+            const auto& expected{coins.at(count++).second};
+            BOOST_CHECK(coin.out == expected.out);
+            BOOST_CHECK_EQUAL(coin.nHeight, expected.nHeight);
+            BOOST_CHECK_EQUAL(coin.fCoinBase, expected.fCoinBase);
+        }
+        BOOST_CHECK(chunk.empty());
+        ++chunks;
+    }
+    BOOST_CHECK_GT(chunks, 1U);
+    BOOST_CHECK_EQUAL(file.fclose(), 0);
 }
 
 BOOST_AUTO_TEST_CASE(provider_init_and_serve)

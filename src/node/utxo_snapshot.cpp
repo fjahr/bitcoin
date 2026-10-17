@@ -19,6 +19,54 @@
 
 namespace node {
 
+DataStream ReadSnapshotChunk(AutoFile& file)
+{
+    const auto size{ReadCompactSize(file)};
+    if (size == 0 || size > SNAPSHOT_CHUNK_SIZE) {
+        throw std::ios_base::failure("Invalid snapshot chunk size");
+    }
+    DataStream chunk;
+    chunk.resize(size);
+    file.read(MakeWritableByteSpan(chunk));
+    return chunk;
+}
+
+void SnapshotChunkWriter::Flush()
+{
+    if (m_chunk.empty()) return;
+    WriteCompactSize(m_file, m_chunk.size());
+    m_file.write(MakeByteSpan(m_chunk));
+    m_chunk.clear();
+}
+
+void SnapshotChunkWriter::WriteCoins(const Txid& txid, std::span<const std::pair<uint32_t, Coin>> coins)
+{
+    while (!coins.empty()) {
+        size_t count{0};
+        size_t size{0};
+        while (count < coins.size()) {
+            const auto& [index, coin]{coins[count]};
+            const size_t next{size + GetSizeOfCompactSize(index) + GetSerializeSize(coin)};
+            if (m_chunk.size() + 32 + GetSizeOfCompactSize(count + 1) + next > SNAPSHOT_CHUNK_SIZE) break;
+            size = next;
+            ++count;
+        }
+        if (count == 0) {
+            if (m_chunk.empty()) throw std::ios_base::failure("Coin exceeds snapshot chunk size");
+            Flush();
+            continue;
+        }
+        m_chunk << txid;
+        WriteCompactSize(m_chunk, count);
+        for (const auto& [index, coin] : coins.first(count)) {
+            WriteCompactSize(m_chunk, index);
+            m_chunk << coin;
+        }
+        coins = coins.subspan(count);
+        if (!coins.empty()) Flush();
+    }
+}
+
 bool WriteSnapshotBaseBlockhash(Chainstate& snapshot_chainstate)
 {
     AssertLockHeld(::cs_main);

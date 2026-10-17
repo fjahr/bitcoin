@@ -6,7 +6,9 @@
 #ifndef BITCOIN_NODE_UTXO_SNAPSHOT_H
 #define BITCOIN_NODE_UTXO_SNAPSHOT_H
 
+#include <coins.h>
 #include <kernel/chainparams.h>
+#include <streams.h>
 #include <kernel/cs_main.h>
 #include <kernel/messagestartchars.h>
 #include <sync.h>
@@ -21,6 +23,9 @@
 #include <ios>
 #include <optional>
 #include <set>
+#include <span>
+#include <utility>
+#include <vector>
 #include <string>
 #include <string_view>
 
@@ -36,7 +41,7 @@ namespace node {
 //! before being used. Thus, new fields should be added only if needed.
 class SnapshotMetadata
 {
-    inline static const uint16_t VERSION{2};
+    inline static const uint16_t VERSION{3};
     const std::set<uint16_t> m_supported_versions{VERSION};
     const MessageStartChars m_network_magic;
 public:
@@ -103,6 +108,25 @@ public:
         s >> m_base_blockhash;
         s >> m_coins_count;
     }
+};
+
+//! Maximum payload size of a version 3 snapshot chunk. Each chunk contains
+//! complete coins, grouped by txid, and is prefixed by its CompactSize length.
+inline constexpr size_t SNAPSHOT_CHUNK_SIZE{262'144};
+
+//! Read one nonempty, bounded snapshot chunk. Group headers never span chunks.
+DataStream ReadSnapshotChunk(AutoFile& file);
+
+//! Pack sorted transaction outputs into independently decodable snapshot chunks.
+class SnapshotChunkWriter
+{
+    AutoFile& m_file;
+    DataStream m_chunk;
+
+public:
+    explicit SnapshotChunkWriter(AutoFile& file) : m_file{file} {}
+    void WriteCoins(const Txid& txid, std::span<const std::pair<uint32_t, Coin>> coins);
+    void Flush();
 };
 
 //! The file in the snapshot chainstate dir which stores the base blockhash. This is

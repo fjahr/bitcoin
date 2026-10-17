@@ -5786,13 +5786,17 @@ util::Result<void> ChainstateManager::PopulateAndValidateSnapshot(
 
     LogInfo("[snapshot] loading %d coins from snapshot %s", coins_left, base_blockhash.ToString());
     int64_t coins_processed{0};
+    DataStream chunk;
+    std::optional<COutPoint> previous_outpoint;
 
     while (coins_left > 0) {
         try {
+            if (chunk.empty()) chunk = node::ReadSnapshotChunk(coins_file);
             Txid txid;
-            coins_file >> txid;
+            chunk >> txid;
             size_t coins_per_txid{0};
-            coins_per_txid = ReadCompactSize(coins_file);
+            coins_per_txid = ReadCompactSize(chunk);
+            if (coins_per_txid == 0) throw std::ios_base::failure("Empty snapshot transaction group");
 
             if (coins_per_txid > coins_left) {
                 return util::Error{Untranslated("Mismatch in coins count in snapshot metadata and actual snapshot data")};
@@ -5801,9 +5805,9 @@ util::Result<void> ChainstateManager::PopulateAndValidateSnapshot(
             for (size_t i = 0; i < coins_per_txid; i++) {
                 COutPoint outpoint;
                 Coin coin;
-                outpoint.n = static_cast<uint32_t>(ReadCompactSize(coins_file));
+                outpoint.n = static_cast<uint32_t>(ReadCompactSize(chunk));
                 outpoint.hash = txid;
-                coins_file >> coin;
+                chunk >> coin;
                 if (coin.nHeight > base_height ||
                     outpoint.n >= std::numeric_limits<decltype(outpoint.n)>::max() // Avoid integer wrap-around in coinstats.cpp:ApplyHash
                 ) {
@@ -5814,6 +5818,10 @@ util::Result<void> ChainstateManager::PopulateAndValidateSnapshot(
                     return util::Error{Untranslated(strprintf("Bad snapshot data after deserializing %d coins - bad tx out value",
                               coins_count - coins_left))};
                 }
+                if (previous_outpoint && !(*previous_outpoint < outpoint)) {
+                    return util::Error{Untranslated("Snapshot coins are not strictly ordered by outpoint")};
+                }
+                previous_outpoint = outpoint;
                 coins_cache.EmplaceCoinInternalDANGER(std::move(outpoint), std::move(coin));
 
                 --coins_left;
@@ -5862,6 +5870,9 @@ util::Result<void> ChainstateManager::PopulateAndValidateSnapshot(
     // method.
     coins_cache.SetBestBlock(base_blockhash);
 
+    if (!chunk.empty()) {
+        return util::Error{Untranslated(strprintf("Bad snapshot - coins left over after deserializing %d coins", coins_processed))};
+    }
     bool out_of_coins{false};
     try {
         std::byte left_over_byte;

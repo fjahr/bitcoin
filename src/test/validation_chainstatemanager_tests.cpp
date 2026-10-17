@@ -273,14 +273,8 @@ struct SnapshotTestSetup : TestChain100Setup {
                 // A UTXO is missing but count is correct
                 metadata.m_coins_count -= 1;
 
-                Txid txid;
-                auto_infile >> txid;
-                // coins size
-                (void)ReadCompactSize(auto_infile);
-                // vout index
-                (void)ReadCompactSize(auto_infile);
-                Coin coin;
-                auto_infile >> coin;
+                // Skip a complete chunk; loading must reject the missing coins.
+                (void)node::ReadSnapshotChunk(auto_infile);
         }));
 
         BOOST_CHECK(!node::FindAssumeutxoChainstateDir(chainman.m_options.datadir));

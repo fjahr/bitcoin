@@ -3298,21 +3298,13 @@ UniValue WriteUTXOSnapshot(
     size_t written_coins_count{0};
     std::vector<std::pair<uint32_t, Coin>> coins;
 
-    // To reduce space the serialization format of the snapshot avoids
-    // duplication of tx hashes. The code takes advantage of the guarantee by
-    // leveldb that keys are lexicographically sorted.
-    // In the coins vector we collect all coins that belong to a certain tx hash
-    // (key.hash) and when we have them all (key.hash != last_hash) we write
-    // them to file using the below lambda function.
-    // See also https://github.com/bitcoin/bitcoin/issues/25675
-    auto write_coins_to_file = [&](AutoFile& afile, const Txid& last_hash, const std::vector<std::pair<uint32_t, Coin>>& coins, size_t& written_coins_count) {
-        afile << last_hash;
-        WriteCompactSize(afile, coins.size());
-        for (const auto& [n, coin] : coins) {
-            WriteCompactSize(afile, n);
-            afile << coin;
-            ++written_coins_count;
-        }
+    node::SnapshotChunkWriter writer{afile};
+    auto write_coins_to_file = [&] {
+        // Database keys encode vout as VARINT, whose byte order is not numeric
+        // for all indices. Snapshot v3 specifies numeric vout order explicitly.
+        std::ranges::sort(coins, {}, &std::pair<uint32_t, Coin>::first);
+        writer.WriteCoins(last_hash, coins);
+        written_coins_count += coins.size();
     };
 
     pcursor->GetKey(key);
@@ -3322,7 +3314,7 @@ UniValue WriteUTXOSnapshot(
         ++iter;
         if (pcursor->GetKey(key) && pcursor->GetValue(coin)) {
             if (key.hash != last_hash) {
-                write_coins_to_file(afile, last_hash, coins, written_coins_count);
+                write_coins_to_file();
                 last_hash = key.hash;
                 coins.clear();
             }
@@ -3332,8 +3324,10 @@ UniValue WriteUTXOSnapshot(
     }
 
     if (!coins.empty()) {
-        write_coins_to_file(afile, last_hash, coins, written_coins_count);
+        write_coins_to_file();
     }
+
+    writer.Flush();
 
     CHECK_NONFATAL(written_coins_count == maybe_stats->coins_count);
 

@@ -2,6 +2,8 @@
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
+#include <map>
+
 #include <chain.h>
 #include <chainparams.h>
 #include <coins.h>
@@ -133,14 +135,15 @@ void utxo_snapshot_fuzz(FuzzBufferType buffer)
             outfile << std::span{file_data};
         } else {
             int height{1};
+            std::map<Txid, std::vector<std::pair<uint32_t, Coin>>> groups;
             for (const auto& block : *g_chain) {
                 auto coinbase{block->vtx.at(0)};
-                outfile << coinbase->GetHash();
-                WriteCompactSize(outfile, 1); // number of coins for the hash
-                WriteCompactSize(outfile, 0); // index of coin
-                outfile << Coin(coinbase->vout[0], height, /*fCoinBaseIn=*/1);
+                groups[coinbase->GetHash()].emplace_back(0, Coin(coinbase->vout[0], height, /*fCoinBaseIn=*/1));
                 height++;
             }
+            node::SnapshotChunkWriter writer{outfile};
+            for (const auto& [txid, coins] : groups) writer.WriteCoins(txid, coins);
+            writer.Flush();
         }
         if constexpr (INVALID) {
             // Append an invalid coin to ensure invalidity. This error will be
