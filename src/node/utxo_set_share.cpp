@@ -10,6 +10,10 @@
 #include <node/utxo_snapshot.h>
 #include <streams.h>
 #include <util/fs.h>
+#include <util/threadnames.h>
+#include <validation.h>
+
+#include <stdexcept>
 
 namespace node {
 
@@ -133,7 +137,7 @@ bool UTXOSetDownloadManager::StartDownload(const uint256& target_blockhash,
                                          const fs::path& output_path)
 {
     LOCK(m_mutex);
-    if (m_state != State::IDLE) return false;
+    if (m_stopping || m_state != State::IDLE) return false;
     m_target_blockhash = target_blockhash;
     m_expected_chunk_merkle_root = au_data.chunk_merkle_root;
     m_output_path = output_path;
@@ -170,6 +174,7 @@ bool UTXOSetDownloadManager::ProcessUTXOTree(int64_t peer_id, const MsgUTXOTree&
     }
     m_chunks_done = 0;
     AutoFile file{fsbridge::fopen(m_output_path, "wb")};
+    m_output_created = !file.IsNull();
     if (file.IsNull() || file.fclose() != 0) {
         m_state = State::FAILED;
         return true;
@@ -201,13 +206,17 @@ bool UTXOSetDownloadManager::ProcessUTXOSetChunk(int64_t peer_id, const MsgUTXOS
         m_state = State::FAILED;
     }
     if (file.fclose() != 0) m_state = State::FAILED;
-    if (m_state == State::FAILED) return true;
+    if (m_state == State::FAILED) {
+        m_chunk_ready.notify_all();
+        return true;
+    }
     info.state = ChunkState::DONE;
     info.assigned_peer = -1;
     if (++m_chunks_done == m_chunks.size()) {
         m_state = State::COMPLETE;
         LogInfo("UTXO set download complete: %s", fs::PathToString(m_output_path));
     }
+    m_chunk_ready.notify_all();
     return true;
 }
 
@@ -286,6 +295,86 @@ fs::path UTXOSetDownloadManager::GetOutputPath() const
 {
     LOCK(m_mutex);
     return m_output_path;
+}
+
+UTXOSetDownloadManager::~UTXOSetDownloadManager()
+{
+    Stop();
+}
+
+void UTXOSetDownloadManager::Interrupt()
+{
+    LOCK(m_mutex);
+    m_stopping = true;
+    m_chunk_ready.notify_all();
+}
+
+void UTXOSetDownloadManager::Stop()
+{
+    Interrupt();
+    if (m_import_thread.joinable()) m_import_thread.join();
+    LOCK(m_mutex);
+    // An interrupted or invalid snapshot must not be re-served on restart.
+    if (m_output_created && m_state != State::COMPLETE) {
+        std::error_code error;
+        fs::remove(m_output_path, error);
+        if (error) LogWarning("Unable to remove incomplete snapshot: %s", error.message());
+        else m_output_created = false;
+    }
+}
+
+DataStream UTXOSetDownloadManager::ReadNextChunk(uint32_t& index)
+{
+    WAIT_LOCK(m_mutex, lock);
+    m_chunk_ready.wait(lock, [&]() EXCLUSIVE_LOCKS_REQUIRED(m_mutex) {
+        return m_stopping || m_state == State::FAILED || index == m_chunks.size() || m_chunks[index].state == ChunkState::DONE;
+    });
+    if (m_stopping || m_state == State::FAILED) throw std::ios_base::failure("Snapshot download interrupted or failed");
+    if (index == m_chunks.size()) return DataStream{};
+
+    const auto& info{m_chunks[index++]};
+    AutoFile file{fsbridge::fopen(m_output_path, "rb")};
+    if (file.IsNull()) throw std::ios_base::failure("Cannot read snapshot download");
+    file.seek(info.offset, SEEK_SET);
+    DataStream chunk;
+    chunk.resize(info.expected.size);
+    file.read(MakeWritableByteSpan(chunk));
+    return chunk;
+}
+
+void UTXOSetDownloadManager::StartImport(ChainstateManager& chainman, std::function<void()> on_activated)
+{
+    LOCK(m_mutex);
+    if (m_stopping || m_import_thread.joinable() || m_state != State::DOWNLOADING) return;
+    m_import_thread = std::thread([this, &chainman, on_activated = std::move(on_activated)] {
+        util::ThreadRename("utxoimport");
+        try {
+            uint32_t index{0};
+            auto header{ReadNextChunk(index)};
+            SnapshotMetadata metadata{chainman.GetParams().MessageStart()};
+            header >> metadata;
+            if (!header.empty() || metadata.m_base_blockhash != GetTargetBlockhash()) {
+                throw std::ios_base::failure("Snapshot header does not match download target");
+            }
+            const auto result{chainman.ActivateSnapshot(metadata, [&] {
+                auto chunk{ReadNextChunk(index)};
+                if (chunk.empty()) return chunk;
+                const auto size{ReadCompactSize(chunk)};
+                if (size == 0 || size > SNAPSHOT_CHUNK_SIZE || size != chunk.size()) {
+                    throw std::ios_base::failure("Invalid snapshot chunk frame");
+                }
+                return chunk;
+            }, /*in_memory=*/false)};
+            if (!result) throw std::runtime_error(util::ErrorString(result).original);
+            on_activated();
+            LogInfo("Downloaded UTXO set activated at height %d", (*result)->nHeight);
+        } catch (const std::exception& e) {
+            LogWarning("Failed to import downloaded UTXO set: %s", e.what());
+            LOCK(m_mutex);
+            m_state = State::FAILED;
+            m_chunk_ready.notify_all();
+        }
+    });
 }
 
 } // namespace node

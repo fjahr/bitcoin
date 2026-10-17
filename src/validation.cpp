@@ -5583,6 +5583,18 @@ util::Result<CBlockIndex*> ChainstateManager::ActivateSnapshot(
         const SnapshotMetadata& metadata,
         bool in_memory)
 {
+    const auto end{coins_file.size()};
+    return ActivateSnapshot(metadata, [&] {
+        return coins_file.tell() == end ? DataStream{} : node::ReadSnapshotChunk(coins_file);
+    }, in_memory);
+}
+
+util::Result<CBlockIndex*> ChainstateManager::ActivateSnapshot(
+        const SnapshotMetadata& metadata,
+        const std::function<DataStream()>& read_chunk,
+        bool in_memory)
+{
+    LOCK(m_snapshot_mutex);
     uint256 base_blockhash = metadata.m_base_blockhash;
 
     CBlockIndex* snapshot_start_block{};
@@ -5686,7 +5698,7 @@ util::Result<CBlockIndex*> ChainstateManager::ActivateSnapshot(
         return util::Error{std::move(reason)};
     };
 
-    if (auto res{this->PopulateAndValidateSnapshot(*snapshot_chainstate, coins_file, metadata)}; !res) {
+    if (auto res{this->PopulateAndValidateSnapshot(*snapshot_chainstate, read_chunk, metadata)}; !res) {
         LOCK(::cs_main);
         return cleanup_bad_snapshot(Untranslated(strprintf("Population failed: %s", util::ErrorString(res).original)));
     }
@@ -5746,7 +5758,7 @@ static void SnapshotUTXOHashBreakpoint(const util::SignalInterrupt& interrupt)
 
 util::Result<void> ChainstateManager::PopulateAndValidateSnapshot(
     Chainstate& snapshot_chainstate,
-    AutoFile& coins_file,
+    const std::function<DataStream()>& read_chunk,
     const SnapshotMetadata& metadata)
 {
     // It's okay to release cs_main before we're done using `coins_cache` because we know
@@ -5788,10 +5800,11 @@ util::Result<void> ChainstateManager::PopulateAndValidateSnapshot(
     int64_t coins_processed{0};
     DataStream chunk;
     std::optional<COutPoint> previous_outpoint;
+    HashWriter hasher;
 
     while (coins_left > 0) {
         try {
-            if (chunk.empty()) chunk = node::ReadSnapshotChunk(coins_file);
+            if (chunk.empty()) chunk = read_chunk();
             Txid txid;
             chunk >> txid;
             size_t coins_per_txid{0};
@@ -5822,6 +5835,7 @@ util::Result<void> ChainstateManager::PopulateAndValidateSnapshot(
                     return util::Error{Untranslated("Snapshot coins are not strictly ordered by outpoint")};
                 }
                 previous_outpoint = outpoint;
+                kernel::ApplyCoinHash(hasher, outpoint, coin);
                 coins_cache.EmplaceCoinInternalDANGER(std::move(outpoint), std::move(coin));
 
                 --coins_left;
@@ -5857,6 +5871,7 @@ util::Result<void> ChainstateManager::PopulateAndValidateSnapshot(
                     }
                 }
             }
+            if (chunk.empty()) LogDebug(BCLog::UTXOSETSHARE, "[snapshot] processed %d coins", coins_processed);
         } catch (const std::ios_base::failure&) {
             return util::Error{Untranslated(strprintf("Bad snapshot format or truncated snapshot after deserializing %d coins",
                       coins_processed))};
@@ -5875,11 +5890,9 @@ util::Result<void> ChainstateManager::PopulateAndValidateSnapshot(
     }
     bool out_of_coins{false};
     try {
-        std::byte left_over_byte;
-        coins_file >> left_over_byte;
+        out_of_coins = read_chunk().empty();
     } catch (const std::ios_base::failure&) {
-        // We expect an exception since we should be out of coins.
-        out_of_coins = true;
+        // A malformed trailing frame is also leftover data.
     }
     if (!out_of_coins) {
         return util::Error{Untranslated(strprintf("Bad snapshot - coins left over after deserializing %d coins",
@@ -5896,27 +5909,13 @@ util::Result<void> ChainstateManager::PopulateAndValidateSnapshot(
 
     assert(coins_cache.GetBestBlock() == base_blockhash);
 
-    // As above, okay to immediately release cs_main here since no other context knows
-    // about the snapshot_chainstate.
-    CCoinsViewDB* snapshot_coinsdb = WITH_LOCK(::cs_main, return &snapshot_chainstate.CoinsDB());
-
-    std::optional<CCoinsStats> maybe_stats;
-
-    LogInfo("[snapshot] computing UTXO set hash to verify against assumeutxo value");
-    try {
-        maybe_stats = ComputeUTXOStats(
-            CoinStatsHashType::HASH_SERIALIZED, snapshot_coinsdb, m_blockman, [&interrupt = m_interrupt] { SnapshotUTXOHashBreakpoint(interrupt); });
-    } catch (StopHashingException const&) {
-        return util::Error{Untranslated("Aborting after an interrupt was requested")};
-    }
-    if (!maybe_stats.has_value()) {
-        return util::Error{Untranslated("Failed to generate coins stats")};
-    }
-
-    // Assert that the deserialized chainstate contents match the expected assumeutxo value.
-    if (AssumeutxoHash{maybe_stats->hashSerialized} != au_data.hash_serialized) {
+    // Version 3 provides precisely the order used by HASH_SERIALIZED. Hash
+    // the decoded coins during insertion rather than scanning the database
+    // again after loading. Strict ordering above also prevents overwrites.
+    const auto hash{hasher.GetHash()};
+    if (AssumeutxoHash{hash} != au_data.hash_serialized) {
         return util::Error{Untranslated(strprintf("Bad snapshot content hash: expected %s, got %s",
-            au_data.hash_serialized.ToString(), maybe_stats->hashSerialized.ToString()))};
+            au_data.hash_serialized.ToString(), hash.ToString()))};
     }
 
     snapshot_chainstate.m_chain.SetTip(*snapshot_start_block);

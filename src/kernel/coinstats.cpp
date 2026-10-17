@@ -50,7 +50,7 @@ static void TxOutSer(T& ss, const COutPoint& outpoint, const Coin& coin)
     ss << coin.out;
 }
 
-static void ApplyCoinHash(HashWriter& ss, const COutPoint& outpoint, const Coin& coin)
+void ApplyCoinHash(HashWriter& ss, const COutPoint& outpoint, const Coin& coin)
 {
     TxOutSer(ss, outpoint, coin);
 }

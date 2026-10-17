@@ -5,10 +5,13 @@
 #ifndef BITCOIN_NODE_UTXO_SET_SHARE_H
 #define BITCOIN_NODE_UTXO_SET_SHARE_H
 
+#include <chrono>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
-#include <chrono>
+#include <functional>
 #include <optional>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -19,6 +22,8 @@
 #include <util/time.h>
 
 class CChainParams;
+class ChainstateManager;
+class DataStream;
 struct AssumeutxoData;
 
 namespace node {
@@ -77,6 +82,14 @@ class UTXOSetDownloadManager
 public:
     enum class State { IDLE, DISCOVERING, DOWNLOADING, COMPLETE, FAILED };
 
+    ~UTXOSetDownloadManager();
+
+    //! Start a worker importing verified chunks in file order, overlapping the
+    //! download. Call on_activated only after the full UTXO commitment matches.
+    void StartImport(ChainstateManager& chainman, std::function<void()> on_activated) EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
+    void Interrupt() EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
+    void Stop() EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
+
     /** Begin a download targeting the given assumeutxo snapshot.
      *  Output is written to output_path. */
     bool StartDownload(const uint256& target_blockhash,
@@ -121,7 +134,14 @@ private:
         UTXOSetChunk expected;
     };
 
+    //! Wait for the next verified chunk, read it from disk, or return EOF.
+    DataStream ReadNextChunk(uint32_t& index) EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
+
     mutable Mutex m_mutex;
+    std::condition_variable m_chunk_ready;
+    std::thread m_import_thread;
+    bool m_stopping GUARDED_BY(m_mutex){false};
+    bool m_output_created GUARDED_BY(m_mutex){false};
 
     State m_state GUARDED_BY(m_mutex){State::IDLE};
     fs::path m_output_path GUARDED_BY(m_mutex);

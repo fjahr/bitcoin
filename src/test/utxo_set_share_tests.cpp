@@ -4,16 +4,22 @@
 
 #include <hash.h>
 #include <kernel/chainparams.h>
+#include <kernel/coinstats.h>
 #include <node/utxo_set_share.h>
 #include <node/utxo_snapshot.h>
 #include <primitives/transaction.h>
+#include <rpc/blockchain.h>
 #include <streams.h>
+#include <test/util/logging.h>
 #include <test/util/random.h>
 #include <test/util/setup_common.h>
 #include <uint256.h>
+#include <univalue.h>
 #include <util/fs.h>
+#include <validation.h>
 
 #include <cstdint>
+#include <future>
 #include <vector>
 
 #include <boost/test/unit_test.hpp>
@@ -336,6 +342,98 @@ BOOST_AUTO_TEST_CASE(download_manager_rejects_bad_merkle_root)
     BOOST_CHECK(!dm.ProcessUTXOTree(1, *tree));
     BOOST_CHECK(!fs::exists(output_path));
 
+}
+
+// Exercise an import before the complete download, including out-of-order
+// delivery and cancellation while the worker waits for a missing chunk.
+BOOST_FIXTURE_TEST_CASE(download_incremental_import, TestChain100Setup)
+{
+    mineBlocks(10);
+    auto& chainman{*m_node.chainman};
+    auto au_data{chainman.GetParams().AssumeutxoForHeight(110)};
+    BOOST_REQUIRE(au_data);
+    const auto path{m_path_root / "snapshot.dat"};
+    (void)CreateUTXOSnapshot(m_node, chainman.ActiveChainstate(),
+        AutoFile{fsbridge::fopen(path, "wb")}, path, path);
+    AutoFile file{fsbridge::fopen(path, "rb")};
+    node::SnapshotMetadata metadata{chainman.GetParams().MessageStart()};
+    file >> metadata;
+
+    // Subdivide this small fixture into one-coin chunks so we can withhold
+    // part of the download without changing the committed UTXO set.
+    DataStream header;
+    header << metadata;
+    std::vector<std::vector<unsigned char>> chunks;
+    chunks.emplace_back(MakeUCharSpan(header).begin(), MakeUCharSpan(header).end());
+    auto payload{node::ReadSnapshotChunk(file)};
+    while (!payload.empty()) {
+        Txid txid;
+        payload >> txid;
+        const auto count{ReadCompactSize(payload)};
+        for (size_t i{0}; i < count; ++i) {
+            const auto index{ReadCompactSize(payload)};
+            Coin coin;
+            payload >> coin;
+            DataStream data;
+            data << txid;
+            WriteCompactSize(data, 1);
+            WriteCompactSize(data, index);
+            data << coin;
+            DataStream frame;
+            WriteCompactSize(frame, data.size());
+            frame.write(MakeByteSpan(data));
+            chunks.emplace_back(MakeUCharSpan(frame).begin(), MakeUCharSpan(frame).end());
+        }
+    }
+    node::MsgUTXOTree tree;
+    tree.block_hash = metadata.m_base_blockhash;
+    for (const auto& data : chunks) tree.chunks.push_back({Hash(data), static_cast<uint32_t>(data.size())});
+    au_data->chunk_merkle_root = node::ComputeUTXOSetMerkleRoot(tree.chunks);
+
+    // Keep the headers, but make the incoming snapshot have more work.
+    auto& ibd{chainman.ActiveChainstate()};
+    auto* tip{ibd.m_chain.Tip()};
+    ibd.m_chain.SetTip(*tip->pprev);
+    for (bool complete : {false, true}) {
+        std::promise<void> processed, activated;
+        auto processed_future{processed.get_future()};
+        auto activated_future{activated.get_future()};
+        DebugLogHelper progress{"[snapshot] processed 2 coins", [&](const std::string* line) {
+            if (line) processed.set_value();
+            return true;
+        }};
+        node::UTXOSetDownloadManager download;
+        BOOST_REQUIRE(download.StartDownload(tree.block_hash, *au_data, m_path_root / "download.dat"));
+        BOOST_REQUIRE(download.ProcessUTXOTree(1, tree));
+        download.StartImport(chainman, [&] { activated.set_value(); });
+        auto deliver = [&](uint32_t i) {
+            BOOST_REQUIRE(download.ProcessUTXOSetChunk(1, {tree.block_hash, i, chunks[i]}));
+        };
+        deliver(2);
+        deliver(0);
+        deliver(1);
+        BOOST_REQUIRE(processed_future.wait_for(std::chrono::seconds{10}) == std::future_status::ready);
+        BOOST_CHECK(download.GetState() == node::UTXOSetDownloadManager::State::DOWNLOADING);
+        BOOST_CHECK(WITH_LOCK(::cs_main, return !chainman.CurrentChainstate().m_from_snapshot_blockhash));
+        if (complete) {
+            // Repeated chunks must not insert or hash their coins twice.
+            deliver(1);
+            for (uint32_t i{3}; i < chunks.size(); ++i) deliver(i);
+            BOOST_REQUIRE(activated_future.wait_for(std::chrono::seconds{10}) == std::future_status::ready);
+            BOOST_CHECK(download.GetState() == node::UTXOSetDownloadManager::State::COMPLETE);
+            const auto stats{kernel::ComputeUTXOStats(kernel::CoinStatsHashType::HASH_SERIALIZED,
+                WITH_LOCK(::cs_main, return &chainman.ActiveChainstate().CoinsDB()), chainman.m_blockman)};
+            BOOST_REQUIRE(stats);
+            BOOST_CHECK(AssumeutxoHash{stats->hashSerialized} == au_data->hash_serialized);
+        }
+        download.Stop();
+        if (!complete) {
+            BOOST_CHECK(download.GetState() == node::UTXOSetDownloadManager::State::FAILED);
+            BOOST_CHECK(!node::FindAssumeutxoChainstateDir(chainman.m_options.datadir));
+            BOOST_CHECK(!fs::exists(m_path_root / "download.dat"));
+        }
+    }
+    ibd.m_chain.SetTip(*tip);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

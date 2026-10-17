@@ -12,6 +12,10 @@ from test_framework.messages import (
     hash256,
     msg_getutxoset,
     msg_getutxotree,
+    msg_utxoset,
+    NODE_NETWORK,
+    NODE_UTXO_SET,
+    NODE_WITNESS,
     deser_compact_size,
     ser_uint256,
 )
@@ -37,6 +41,22 @@ def chunk_merkle_root(chunks):
         hashes = [hash256(b'\x01' + hashes[i] + hashes[i + 1]) if i + 1 < len(hashes) else hashes[i]
                   for i in range(0, len(hashes), 2)]
     return int.from_bytes(hashes[0], 'little')
+
+
+class PausingSnapshotPeer(P2PInterface):
+    """Serve the header but withhold the coin data to stall the importer."""
+
+    def __init__(self, tree, header):
+        super().__init__()
+        self.tree = tree
+        self.header = header
+
+    def on_getutxotree(self, message):
+        self.send_without_ping(self.tree)
+
+    def on_getutxoset(self, message):
+        if message.chunk_index == 0:
+            self.send_without_ping(msg_utxoset(block_hash=self.tree.block_hash, chunk_index=0, data=self.header))
 
 
 class UTXOSetShareTest(BitcoinTestFramework):
@@ -156,6 +176,17 @@ class UTXOSetShareTest(BitcoinTestFramework):
             block = n0.getblock(n0.getblockhash(i), 0)
             n1.submitheader(block)
         assert_equal(n1.getblockchaininfo()["headers"], SNAPSHOT_HEIGHT)
+
+        self.log.info("Test importing starts before download completion and shutdown wakes the worker")
+        with n1.assert_debug_log([f"[snapshot] loading {dump_output['coins_written']} coins"]):
+            n1.downloadutxoset(SNAPSHOT_HEIGHT)
+            paused_peer = n1.add_p2p_connection(
+                PausingSnapshotPeer(tree, chunks[0]), services=NODE_NETWORK | NODE_WITNESS | NODE_UTXO_SET)
+            paused_peer.wait_until(lambda: 'getutxoset' in paused_peer.last_message)
+        assert_equal(len(n1.getchainstates()['chainstates']), 1)
+        self.restart_node(1)
+        assert_equal(n1.getblockchaininfo()['headers'], SNAPSHOT_HEIGHT)
+        assert 'UTXO_SET' not in n1.getnetworkinfo()['localservicesnames']
 
         self.log.info("Test full P2P download via downloadutxoset RPC")
         result = n1.downloadutxoset(SNAPSHOT_HEIGHT)

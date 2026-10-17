@@ -1089,9 +1089,6 @@ private:
     /** Handle a getutxoset request. Responds with a single chunk and its Merkle proof. */
     void ProcessGetUTXOSet(CNode& node, Peer& peer, DataStream& vRecv) EXCLUSIVE_LOCKS_REQUIRED(g_msgproc_mutex);
 
-    /** Activate a completed UTXO set download. Runs on the scheduler thread. */
-    void MaybeActivateDownloadedSnapshot();
-
     /** Checks if address relay is permitted with peer. If needed, initializes
      * the m_addr_known bloom filter and sets m_addr_relay_enabled to true.
      *
@@ -3482,38 +3479,6 @@ void PeerManagerImpl::ProcessGetUTXOSet(CNode& node, Peer& peer, DataStream& vRe
     MakeAndPushMessage(node, NetMsgType::UTXOSET, response);
 }
 
-void PeerManagerImpl::MaybeActivateDownloadedSnapshot()
-{
-    if (!m_opts.utxo_set_download_manager) return;
-    if (m_opts.utxo_set_download_manager->GetState() != node::UTXOSetDownloadManager::State::COMPLETE) return;
-
-    const fs::path path{m_opts.utxo_set_download_manager->GetOutputPath()};
-    AutoFile afile{fsbridge::fopen(path, "rb")};
-    if (afile.IsNull()) {
-        LogWarning("Failed to open downloaded UTXO set: %s", fs::PathToString(path));
-        return;
-    }
-
-    node::SnapshotMetadata metadata{m_chainparams.MessageStart()};
-    try {
-        afile >> metadata;
-    } catch (const std::ios_base::failure& e) {
-        LogWarning("Failed to parse downloaded UTXO set metadata: %s", e.what());
-        return;
-    }
-
-    auto activation_result{m_chainman.ActivateSnapshot(afile, metadata, /*in_memory=*/false)};
-    if (!activation_result) {
-        LogWarning("Failed to activate downloaded UTXO set: %s", util::ErrorString(activation_result).original);
-        return;
-    }
-
-    m_connman.RemoveLocalServices(NODE_NETWORK);
-    m_connman.AddLocalServices(NODE_NETWORK_LIMITED);
-
-    LogInfo("Downloaded UTXO set activated at height %d", (*activation_result)->nHeight);
-}
-
 void PeerManagerImpl::ProcessBlock(CNode& node, const std::shared_ptr<const CBlock>& block, bool force_processing, bool min_pow_checked)
 {
     bool new_block{false};
@@ -5162,7 +5127,14 @@ void PeerManagerImpl::ProcessMessage(Peer& peer, CNode& pfrom, const std::string
         if (!peer.m_sent_getutxotree) return;
         node::MsgUTXOTree tree;
         vRecv >> tree;
-        if (!m_opts.utxo_set_download_manager->ProcessUTXOTree(pfrom.GetId(), tree)) pfrom.fDisconnect = true;
+        if (!m_opts.utxo_set_download_manager->ProcessUTXOTree(pfrom.GetId(), tree)) {
+            pfrom.fDisconnect = true;
+            return;
+        }
+        m_opts.utxo_set_download_manager->StartImport(m_chainman, [this] {
+            m_connman.RemoveLocalServices(NODE_NETWORK);
+            m_connman.AddLocalServices(NODE_NETWORK_LIMITED);
+        });
         return;
     }
 
@@ -5181,11 +5153,6 @@ void PeerManagerImpl::ProcessMessage(Peer& peer, CNode& pfrom, const std::string
             LogDebug(BCLog::UTXOSETSHARE, "Invalid UTXO set chunk from peer=%d, disconnecting", pfrom.GetId());
             pfrom.fDisconnect = true;
             return;
-        }
-
-        // When download completes, activate on the scheduler thread
-        if (m_opts.utxo_set_download_manager->GetState() == node::UTXOSetDownloadManager::State::COMPLETE) {
-            m_scheduler->scheduleFromNow([this] { MaybeActivateDownloadedSnapshot(); }, 0s);
         }
         return;
     }

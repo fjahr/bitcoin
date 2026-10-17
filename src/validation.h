@@ -41,6 +41,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <memory>
 #include <optional>
@@ -56,6 +57,7 @@ class CTxMemPool;
 class ChainstateManager;
 struct ChainTxData;
 class DisconnectedBlockTransactions;
+class DataStream;
 struct PrecomputedTransactionData;
 struct LockPoints;
 struct AssumeutxoData;
@@ -945,16 +947,18 @@ private:
 
     bool NotifyHeaderTip() LOCKS_EXCLUDED(GetMutex());
 
+    //! Serialize snapshot imports, including imports waiting for downloaded chunks.
+    Mutex m_snapshot_mutex;
+
     //! Internal helper for ActivateSnapshot().
     //!
     //! De-serialization of a snapshot that is created with
     //! the dumptxoutset RPC.
-    //! To reduce space the serialization format of the snapshot avoids
-    //! duplication of tx hashes. The code takes advantage of the guarantee by
-    //! leveldb that keys are lexicographically sorted.
+    //! Decode complete chunks in global outpoint order, populate the unused
+    //! chainstate and compute the UTXO commitment during insertion.
     [[nodiscard]] util::Result<void> PopulateAndValidateSnapshot(
         Chainstate& snapshot_chainstate,
-        AutoFile& coins_file,
+        const std::function<DataStream()>& read_chunk,
         const node::SnapshotMetadata& metadata);
 
     /**
@@ -1097,13 +1101,20 @@ public:
     //!
     //! - Initialize an unused Chainstate.
     //! - Load its `CoinsViews` contents from `coins_file`.
-    //! - Verify that the hash of the resulting coinsdb matches the expected hash
+    //! - Verify the incrementally computed coin hash against the expected hash
     //!   per assumeutxo chain parameters.
     //! - Wait for our headers chain to include the base block of the snapshot.
     //! - "Fast forward" the tip of the new chainstate to the base of the snapshot.
     //! - Construct the new Chainstate and add it to m_chainstates.
     [[nodiscard]] util::Result<CBlockIndex*> ActivateSnapshot(
-        AutoFile& coins_file, const node::SnapshotMetadata& metadata, bool in_memory);
+        AutoFile& coins_file, const node::SnapshotMetadata& metadata, bool in_memory) EXCLUSIVE_LOCKS_REQUIRED(!m_snapshot_mutex);
+
+    //! Import complete chunk payloads as they become available. read_chunk may
+    //! wait for a download, returns an empty stream at EOF, and throws on failure.
+    //! The new chainstate remains private until the complete set is verified.
+    [[nodiscard]] util::Result<CBlockIndex*> ActivateSnapshot(
+        const node::SnapshotMetadata& metadata,
+        const std::function<DataStream()>& read_chunk, bool in_memory) EXCLUSIVE_LOCKS_REQUIRED(!m_snapshot_mutex);
 
     //! Try to validate an assumeutxo snapshot by using a validated historical
     //! chainstate targeted at the snapshot block. When the target block is

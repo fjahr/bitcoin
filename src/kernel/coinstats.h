@@ -17,6 +17,7 @@ class CCoinsView;
 class Coin;
 class COutPoint;
 class CScript;
+class HashWriter;
 class MuHash3072;
 namespace node {
 class BlockManager;
@@ -73,6 +74,10 @@ struct CCoinsStats {
 };
 
 uint64_t GetBogoSize(const CScript& script_pub_key);
+
+//! Hash one coin using the HASH_SERIALIZED commitment encoding. Coins must be
+//! supplied in strictly increasing snapshot outpoint order.
+void ApplyCoinHash(HashWriter& hash, const COutPoint& outpoint, const Coin& coin);
 
 void ApplyCoinHash(MuHash3072& muhash, const COutPoint& outpoint, const Coin& coin);
 void RemoveCoinHash(MuHash3072& muhash, const COutPoint& outpoint, const Coin& coin);

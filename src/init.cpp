@@ -276,6 +276,7 @@ void Interrupt(NodeContext& node)
     InterruptHTTPRPC();
     InterruptRPC();
     InterruptREST();
+    if (node.utxo_set_download_manager) node.utxo_set_download_manager->Interrupt();
     if (node.tor_controller) {
         node.tor_controller->Interrupt();
     }
@@ -320,6 +321,8 @@ void Shutdown(NodeContext& node)
     // using the other before destroying them.
     if (node.peerman && node.validation_signals) node.validation_signals->UnregisterValidationInterface(node.peerman.get());
     if (node.connman) node.connman->Stop();
+    // Join before the importer can outlive the chain manager or its activation callback.
+    if (node.utxo_set_download_manager) node.utxo_set_download_manager->Stop();
 
     if (node.tor_controller) {
         node.tor_controller->Join();
