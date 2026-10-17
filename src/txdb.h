@@ -13,10 +13,13 @@
 #include <sync.h>
 #include <util/fs.h>
 
+#include <condition_variable>
 #include <cstddef>
+#include <exception>
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <thread>
 #include <vector>
 
 class COutPoint;
@@ -60,20 +63,33 @@ public:
 /** Bulk load a fresh, private snapshot database without a coins hash-map cache.
  * The caller must validate coins and reject duplicate outpoints. Partial writes
  * are disposable: the database has no best block until Finish() succeeds.
- * The database must outlive the writer and must not be used concurrently.
+ * A worker writes one batch while the caller fills the next, bounding buffered
+ * data to two batches (plus at most one coin per batch). The database must
+ * outlive the writer and must not otherwise be modified during import.
  */
 class CCoinsViewDB::SnapshotWriter
 {
     CDBWrapper& m_db;
     const size_t m_batch_bytes;
-    CDBBatch m_batch;
+    std::unique_ptr<CDBBatch> m_batch;
+    Mutex m_mutex;
+    std::condition_variable m_ready;
+    std::unique_ptr<CDBBatch> m_pending GUARDED_BY(m_mutex);
+    bool m_writing GUARDED_BY(m_mutex){false};
+    std::exception_ptr m_error GUARDED_BY(m_mutex);
+    bool m_stopping GUARDED_BY(m_mutex){false};
+    std::thread m_thread;
 
-    void Flush();
+    void Flush() EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
+    void Run() EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
 
 public:
     explicit SnapshotWriter(CCoinsViewDB& db);
-    void AddCoin(const COutPoint& outpoint, const Coin& coin);
-    void Finish(const uint256& block_hash);
+    //! Join an outstanding write and discard unsubmitted coins on cancellation.
+    ~SnapshotWriter();
+    void AddCoin(const COutPoint& outpoint, const Coin& coin) EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
+    //! Wait for all writes, propagating database errors before activation.
+    void Finish(const uint256& block_hash) EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
 };
 
 #endif // BITCOIN_TXDB_H

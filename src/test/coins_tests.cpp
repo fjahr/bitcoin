@@ -1048,6 +1048,20 @@ void TestFlushBehavior(
 
 BOOST_FIXTURE_TEST_CASE(ccoins_flush_behavior, FlushTest)
 {
+    // Abandon an import while batches may still be in flight. Destruction must
+    // join the writer before the database is destroyed, without publishing a tip.
+    {
+        CCoinsViewDB aborted{{.path = "aborted", .cache_bytes = 1 << 23, .memory_only = true}, {.batch_write_bytes = 100}};
+        {
+            CCoinsViewDB::SnapshotWriter writer{aborted};
+            const auto txid{Txid::FromUint256(m_rng.rand256())};
+            for (uint32_t n{0}; n < 1000; ++n) {
+                writer.AddCoin(COutPoint{txid, n}, Coin{CTxOut{123, CScript{} << OP_TRUE}, 1, false});
+            }
+        }
+        BOOST_CHECK(aborted.GetBestBlock().IsNull());
+    }
+
     // Populate a fresh database in small batches before normal cache operations.
     CCoinsViewDB base{{.path = "test", .cache_bytes = 1 << 23, .memory_only = true}, {.batch_write_bytes = 100}};
     const auto txid{Txid::FromUint256(m_rng.rand256())};

@@ -164,30 +164,75 @@ void CCoinsViewDB::BatchWrite(CoinsViewCacheCursor& cursor, const uint256& hashB
 }
 
 CCoinsViewDB::SnapshotWriter::SnapshotWriter(CCoinsViewDB& db)
-    : m_db{*db.m_db}, m_batch_bytes{db.m_options.batch_write_bytes}, m_batch{m_db}
+    : m_db{*db.m_db}, m_batch_bytes{db.m_options.batch_write_bytes}, m_batch{std::make_unique<CDBBatch>(m_db)},
+      m_pending{std::make_unique<CDBBatch>(m_db)}
 {
     assert(db.GetBestBlock().IsNull());
     assert(db.GetHeadBlocks().empty());
+    m_thread = std::thread{[this] { Run(); }};
+}
+
+CCoinsViewDB::SnapshotWriter::~SnapshotWriter()
+{
+    {
+        LOCK(m_mutex);
+        m_stopping = true;
+    }
+    m_ready.notify_all();
+    m_thread.join();
+}
+
+void CCoinsViewDB::SnapshotWriter::Run()
+{
+    try {
+        WAIT_LOCK(m_mutex, lock);
+        while (true) {
+            m_ready.wait(lock, [this]() EXCLUSIVE_LOCKS_REQUIRED(m_mutex) { return m_stopping || m_writing; });
+            if (m_stopping) return;
+            // Retain ownership until the write finishes so Flush() cannot queue
+            // a third batch. Only this thread accesses the submitted batch.
+            auto* batch{m_pending.get()};
+            {
+                REVERSE_LOCK(lock, m_mutex);
+                m_db.WriteBatch(*batch);
+                batch->Clear();
+            }
+            m_writing = false;
+            m_ready.notify_all();
+        }
+    } catch (...) {
+        LOCK(m_mutex);
+        m_error = std::current_exception();
+        m_ready.notify_all();
+    }
 }
 
 void CCoinsViewDB::SnapshotWriter::Flush()
 {
-    m_db.WriteBatch(m_batch);
-    m_batch.Clear();
+    WAIT_LOCK(m_mutex, lock);
+    m_ready.wait(lock, [this]() EXCLUSIVE_LOCKS_REQUIRED(m_mutex) { return !m_writing || m_error; });
+    if (m_error) std::rethrow_exception(m_error);
+    assert(!m_stopping);
+    m_pending.swap(m_batch);
+    m_writing = true;
+    m_ready.notify_all();
 }
 
 void CCoinsViewDB::SnapshotWriter::AddCoin(const COutPoint& outpoint, const Coin& coin)
 {
     assert(!coin.IsSpent());
-    m_batch.Write(CoinEntry{&outpoint}, coin);
-    if (m_batch.ApproximateSize() > m_batch_bytes) Flush();
+    m_batch->Write(CoinEntry{&outpoint}, coin);
+    if (m_batch->ApproximateSize() > m_batch_bytes) Flush();
 }
 
 void CCoinsViewDB::SnapshotWriter::Finish(const uint256& block_hash)
 {
     assert(!block_hash.IsNull());
-    m_batch.Write(DB_BEST_BLOCK, block_hash);
+    m_batch->Write(DB_BEST_BLOCK, block_hash);
     Flush();
+    WAIT_LOCK(m_mutex, lock);
+    m_ready.wait(lock, [this]() EXCLUSIVE_LOCKS_REQUIRED(m_mutex) { return !m_writing || m_error; });
+    if (m_error) std::rethrow_exception(m_error);
 }
 
 size_t CCoinsViewDB::EstimateSize() const
