@@ -265,15 +265,14 @@ inline constexpr const char* WTXIDRELAY{"wtxidrelay"};
  */
 inline constexpr const char* SENDTXRCNCL{"sendtxrcncl"};
 /**
- * getutxostinf requests a list of available UTXO set snapshots from a peer.
+ * getutxotree requests the ordered chunk hash-and-size list for a snapshot.
  * Only available with service bit NODE_UTXO_SET.
  */
-inline constexpr const char* GETUTXOSETINFO{"getutxostinf"};
+inline constexpr const char* GETUTXOTREE{"getutxotree"};
 /**
- * utxosetinfo is a response to a getutxostinf request containing a list of
- * available UTXO set snapshots that the peer can serve.
+ * utxotree contains the ordered chunk hashes and sizes for a snapshot.
  */
-inline constexpr const char* UTXOSETINFO{"utxosetinfo"};
+inline constexpr const char* UTXOTREE{"utxotree"};
 /**
  * getutxoset requests a single chunk of UTXO set data from a peer.
  * Only available with service bit NODE_UTXO_SET.
@@ -281,7 +280,7 @@ inline constexpr const char* UTXOSETINFO{"utxosetinfo"};
 inline constexpr const char* GETUTXOSET{"getutxoset"};
 /**
  * utxoset is a response to a getutxoset request containing one chunk of
- * UTXO set data with its Merkle proof.
+ * framed UTXO set data.
  */
 inline constexpr const char* UTXOSET{"utxoset"};
 }; // namespace NetMsgType
@@ -323,8 +322,8 @@ inline const std::array ALL_NET_MESSAGE_TYPES{std::to_array<std::string>({
     NetMsgType::CFCHECKPT,
     NetMsgType::WTXIDRELAY,
     NetMsgType::SENDTXRCNCL,
-    NetMsgType::GETUTXOSETINFO,
-    NetMsgType::UTXOSETINFO,
+    NetMsgType::GETUTXOTREE,
+    NetMsgType::UTXOTREE,
     NetMsgType::GETUTXOSET,
     NetMsgType::UTXOSET,
 })};

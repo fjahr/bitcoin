@@ -4,14 +4,15 @@
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
 """Test P2P UTXO set sharing."""
 
-import hashlib
+import io
 import os
 import shutil
 
 from test_framework.messages import (
     hash256,
     msg_getutxoset,
-    msg_getutxostinf,
+    msg_getutxotree,
+    deser_compact_size,
     ser_uint256,
 )
 from test_framework.p2p import P2PInterface
@@ -26,20 +27,16 @@ from test_framework.wallet import MiniWallet
 # Using height 299 because it has a valid assumeutxo param
 START_HEIGHT = 199
 SNAPSHOT_HEIGHT = 299
-CHUNK_SIZE = 3_900_000
+CHUNK_SIZE = 262144
+EXPECTED_ROOT = "e4b897c61c1524fa3cee065d06001eda5d23a34ecb9dc684dcc890dc8f4ac4df"
 
 
-def verify_merkle_proof(leaf_hash, proof, chunk_index, total_chunks, merkle_root):
-    computed = leaf_hash
-    index = chunk_index
-    for sibling in proof:
-        if index & 1:
-            computed = hash256(ser_uint256(sibling) + ser_uint256(computed))
-        else:
-            computed = hash256(ser_uint256(computed) + ser_uint256(sibling))
-        computed = int.from_bytes(computed, 'little')
-        index >>= 1
-    return computed == merkle_root
+def chunk_merkle_root(chunks):
+    hashes = [hash256(b'\x00' + chunk.size.to_bytes(4, 'little') + ser_uint256(chunk.hash)) for chunk in chunks]
+    while len(hashes) > 1:
+        hashes = [hash256(b'\x01' + hashes[i] + hashes[i + 1]) if i + 1 < len(hashes) else hashes[i]
+                  for i in range(0, len(hashes), 2)]
+    return int.from_bytes(hashes[0], 'little')
 
 
 class UTXOSetShareTest(BitcoinTestFramework):
@@ -96,74 +93,60 @@ class UTXOSetShareTest(BitcoinTestFramework):
         services = n0.getnetworkinfo()['localservicesnames']
         assert 'UTXO_SET' in services
 
-        # Connect peer and request utxosetinfo
+        block_hash = int(dump_output['base_hash'], 16)
         peer = n0.add_p2p_connection(P2PInterface())
-        peer.send_and_ping(msg_getutxostinf())
+        peer.send_and_ping(msg_getutxotree(block_hash))
 
-        self.log.info("Test utxosetinfo response is valid")
-        assert 'utxosetinfo' in peer.last_message
-        info_msg = peer.last_message['utxosetinfo']
-        assert_greater_than(len(info_msg.entries), 0)
+        self.log.info("Test utxotree hash-and-size list")
+        tree = peer.last_message['utxotree']
+        assert_equal(tree.block_hash, block_hash)
+        assert_equal(tree.version, 3)
+        assert_greater_than(len(tree.chunks), 1)
+        assert_equal(tree.chunks[0].size, 51)
+        # This commitment is independently computed and hardcoded in chainparams.
+        assert_equal(chunk_merkle_root(tree.chunks), int(EXPECTED_ROOT, 16))
 
-        entry = info_msg.entries[0]
-        assert_equal(entry.height, SNAPSHOT_HEIGHT)
-        assert_greater_than(entry.data_length, 0)
-
-        self.log.info("Test requesting all chunks and verifying Merkle proofs")
-        total_chunks = (entry.data_length + CHUNK_SIZE - 1) // CHUNK_SIZE
-        reassembled = b""
-
-        for i in range(total_chunks):
-            req = msg_getutxoset(height=entry.height, block_hash=entry.block_hash, chunk_index=i)
-            peer.send_and_ping(req)
-            assert 'utxoset' in peer.last_message
-            chunk_msg = peer.last_message['utxoset']
-
-            assert_equal(chunk_msg.height, entry.height)
-            assert_equal(chunk_msg.block_hash, entry.block_hash)
-            assert_equal(chunk_msg.chunk_index, i)
-            assert_greater_than(len(chunk_msg.data), 0)
-
-            if i < total_chunks - 1:
-                assert_equal(len(chunk_msg.data), CHUNK_SIZE)
-
-            leaf_hash = int.from_bytes(hash256(chunk_msg.data), 'little')
-            assert verify_merkle_proof(leaf_hash, chunk_msg.proof_hashes, i, total_chunks, entry.merkle_root)
-
-            reassembled += chunk_msg.data
+        self.log.info("Test requesting chunks in reverse order")
+        total_chunks = len(tree.chunks)
+        chunks = [None] * total_chunks
+        for i in reversed(range(total_chunks)):
+            peer.send_and_ping(msg_getutxoset(block_hash=block_hash, chunk_index=i))
+            chunk = peer.last_message['utxoset']
+            assert_equal(chunk.block_hash, block_hash)
+            assert_equal(chunk.chunk_index, i)
+            assert_equal(len(chunk.data), tree.chunks[i].size)
+            assert_equal(int.from_bytes(hash256(chunk.data), 'little'), tree.chunks[i].hash)
+            if i:
+                payload = io.BytesIO(chunk.data)
+                length = deser_compact_size(payload)
+                assert 0 < length <= CHUNK_SIZE
+                assert_equal(len(payload.read()), length)
+            chunks[i] = chunk.data
 
         self.log.info("Test reassembled data matches original snapshot")
         with open(snapshot_path, 'rb') as f:
-            original = f.read()
-        assert_equal(len(reassembled), len(original))
-        assert_equal(hashlib.sha256(reassembled).hexdigest(), hashlib.sha256(original).hexdigest())
+            assert_equal(b"".join(chunks), f.read())
 
         self.log.info("Test invalid chunk index causes disconnect")
         peer2 = n0.add_p2p_connection(P2PInterface())
-        bad_req = msg_getutxoset(height=entry.height, block_hash=entry.block_hash, chunk_index=total_chunks)
+        bad_req = msg_getutxoset(block_hash=block_hash, chunk_index=total_chunks)
         peer2.send_without_ping(bad_req)
         peer2.wait_for_disconnect()
 
         self.log.info("Test wrong block hash causes disconnect")
         peer3 = n0.add_p2p_connection(P2PInterface())
-        bad_req = msg_getutxoset(height=entry.height, block_hash=0xdeadbeef, chunk_index=0)
+        bad_req = msg_getutxoset(block_hash=0xdeadbeef, chunk_index=0)
         peer3.send_without_ping(bad_req)
         peer3.wait_for_disconnect()
-
-        self.log.info("Test wrong height causes disconnect")
-        peer4 = n0.add_p2p_connection(P2PInterface())
-        bad_req = msg_getutxoset(height=entry.height + 1, block_hash=entry.block_hash, chunk_index=0)
-        peer4.send_without_ping(bad_req)
-        peer4.wait_for_disconnect()
 
         self.log.info("Test node without snapshot does not advertise NODE_UTXO_SET")
         n1_services = n1.getnetworkinfo()['localservicesnames']
         assert 'UTXO_SET' not in n1_services
 
-        self.log.info("Test getutxostinf to non-serving node gets no response")
+        self.log.info("Test getutxotree to non-serving node gets no response")
         peer5 = n1.add_p2p_connection(P2PInterface())
-        peer5.send_and_ping(msg_getutxostinf())
-        assert 'utxosetinfo' not in peer5.last_message
+        peer5.send_and_ping(msg_getutxotree(block_hash))
+        assert 'utxotree' not in peer5.last_message
 
         self.log.info("Test downloadutxoset with invalid height")
         assert_raises_rpc_error(-8, "No assumeutxo data for height", n1.downloadutxoset, 12345)

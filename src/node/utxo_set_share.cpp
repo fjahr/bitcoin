@@ -4,352 +4,210 @@
 
 #include <node/utxo_set_share.h>
 
-#include <consensus/merkle.h>
 #include <hash.h>
 #include <kernel/chainparams.h>
 #include <logging.h>
 #include <node/utxo_snapshot.h>
 #include <streams.h>
-#include <uint256.h>
 #include <util/fs.h>
-
-#include <cstdint>
-#include <vector>
 
 namespace node {
 
-bool VerifyChunkMerkleProof(const uint256& leaf_hash,
-                            const std::vector<uint256>& proof,
-                            uint32_t chunk_index,
-                            uint32_t total_chunks,
-                            const uint256& merkle_root)
+uint256 ComputeUTXOSetMerkleRoot(const std::vector<UTXOSetChunk>& chunks)
 {
-    if (total_chunks == 0) return false;
-
-    // Verify proof depth matches the expected tree height
-    uint32_t expected_depth{0};
-    for (uint32_t n{total_chunks - 1}; n > 0; n >>= 1) ++expected_depth;
-    if (proof.size() != expected_depth) return false;
-
-    uint256 computed{leaf_hash};
-    uint32_t index{chunk_index};
-
-    for (const uint256& sibling : proof) {
-        bool is_right_child{(index % 2) != 0};
-        if (is_right_child) {
-            computed = Hash(sibling, computed);
-        } else {
-            computed = Hash(computed, sibling);
+    std::vector<uint256> hashes;
+    hashes.reserve(chunks.size());
+    for (const auto& chunk : chunks) {
+        hashes.push_back((HashWriter{} << uint8_t{0} << chunk.size << chunk.hash).GetHash());
+    }
+    while (hashes.size() > 1) {
+        size_t out{0};
+        for (size_t i{0}; i < hashes.size(); i += 2) {
+            hashes[out++] = i + 1 == hashes.size() ? hashes[i] :
+                (HashWriter{} << uint8_t{1} << hashes[i] << hashes[i + 1]).GetHash();
         }
-        index /= 2;
+        hashes.resize(out);
     }
-
-    return computed == merkle_root;
-}
-
-/** Compute leaf hashes by from snapshot file */
-static std::vector<uint256> ComputeLeafHashes(const fs::path& path, uint64_t file_size)
-{
-    AutoFile file{fsbridge::fopen(path, "rb")};
-    if (file.IsNull()) return {};
-
-    std::vector<uint256> leaf_hashes;
-    uint64_t remaining{file_size};
-
-    while (remaining > 0) {
-        uint64_t chunk_size{std::min(remaining, UTXO_SET_CHUNK_SIZE)};
-        std::vector<unsigned char> buffer(chunk_size);
-        file.read(MakeWritableByteSpan(buffer));
-        leaf_hashes.push_back(Hash(buffer));
-        remaining -= chunk_size;
-    }
-
-    return leaf_hashes;
-}
-
-/** Try to load a sidecar file. Returns nullopt if not found. */
-static std::optional<ChunkMerkleCache> LoadSidecar(const fs::path& sidecar_path, uint64_t expected_size)
-{
-    AutoFile file{fsbridge::fopen(sidecar_path, "rb")};
-    if (file.IsNull()) return std::nullopt;
-
-    try {
-        ChunkMerkleCache cache;
-        file >> cache;
-        if (cache.snapshot_file_size != expected_size) return std::nullopt;
-        // Validate leaf count matches expected number of chunks (ceiling division)
-        if (cache.leaf_hashes.size() != (expected_size - 1) / UTXO_SET_CHUNK_SIZE + 1) return std::nullopt;
-        return cache;
-    } catch (const std::exception&) {
-        return std::nullopt;
-    }
-}
-
-/** Write a sidecar file */
-static bool WriteSidecar(const fs::path& sidecar_path, const ChunkMerkleCache& cache)
-{
-    AutoFile file{fsbridge::fopen(sidecar_path, "wb")};
-    if (file.IsNull()) return false;
-
-    try {
-        file << cache;
-        if (!file.Commit()) return false;
-        if (file.fclose() != 0) return false;
-        return true;
-    } catch (const std::exception&) {
-        return false;
-    }
+    return hashes.empty() ? uint256{} : hashes.front();
 }
 
 size_t UTXOSetShareProvider::Initialize(const fs::path& share_dir, const CChainParams& params)
 {
     m_snapshots.clear();
-
     std::error_code error;
     if (!fs::is_directory(share_dir, error)) return 0;
 
     for (const auto& entry : fs::directory_iterator(share_dir, error)) {
-        if (!entry.is_regular_file(error)) continue;
-        if (entry.path().extension() == ".merkle") continue;
-
-        // Try to read snapshot metadata
+        if (!entry.is_regular_file(error) || entry.path().extension() == ".merkle") continue;
         AutoFile file{fsbridge::fopen(entry.path(), "rb")};
         if (file.IsNull()) continue;
-
-        SnapshotMetadata metadata(params.MessageStart());
         try {
+            SnapshotMetadata metadata{params.MessageStart()};
             file >> metadata;
-        } catch (const std::exception& e) {
-            LogDebug(BCLog::UTXOSETSHARE, "Unable to read %s: %s", fs::PathToString(entry.path()), e.what());
-            continue;
-        }
+            if (!params.AssumeutxoForBlockhash(metadata.m_base_blockhash)) continue;
+            const auto file_size{fs::file_size(entry.path())};
+            SnapshotData snapshot;
+            snapshot.path = entry.path();
+            snapshot.tree.block_hash = metadata.m_base_blockhash;
 
-        // Check with assumeutxo params
-        auto au_data{params.AssumeutxoForBlockhash(metadata.m_base_blockhash)};
-        if (!au_data) {
-            LogDebug(BCLog::UTXOSETSHARE, "Skipping %s: no assumeutxo params for block %s",
-                     fs::PathToString(entry.path()), metadata.m_base_blockhash.ToString());
-            continue;
-        }
-
-        uint64_t file_size{fs::file_size(entry.path(), error)};
-        if (error) continue;
-
-        // Try loading the sidecar file or compute it
-        fs::path sidecar_path{entry.path()};
-        sidecar_path += ".merkle";
-
-        std::vector<uint256> leaf_hashes;
-        uint256 merkle_root;
-
-        auto cached{LoadSidecar(sidecar_path, file_size)};
-        if (cached) {
-            leaf_hashes = std::move(cached->leaf_hashes);
-            merkle_root = cached->merkle_root;
-            LogDebug(BCLog::UTXOSETSHARE, "Loaded sidecar for %s", fs::PathToString(entry.path()));
-        } else {
-            LogInfo("Computing chunk hashes for %s", fs::PathToString(entry.path()));
-            leaf_hashes = ComputeLeafHashes(entry.path(), file_size);
-            if (leaf_hashes.empty()) continue;
-
-            merkle_root = ComputeMerkleRoot(leaf_hashes);
-
-            ChunkMerkleCache cache;
-            cache.snapshot_file_size = file_size;
-            cache.leaf_hashes = leaf_hashes;
-            cache.merkle_root = merkle_root;
-
-            if (WriteSidecar(sidecar_path, cache)) {
-                LogDebug(BCLog::UTXOSETSHARE, "Wrote sidecar for %s", fs::PathToString(entry.path()));
-            } else {
-                LogWarning("Failed to write sidecar for %s", fs::PathToString(entry.path()));
+            // A sidecar is only an acceleration cache. Its version and source
+            // length must match; offsets are derived from the chunk sizes.
+            fs::path sidecar{entry.path()};
+            sidecar += ".merkle";
+            bool cached{false};
+            {
+                AutoFile cache{fsbridge::fopen(sidecar, "rb")};
+                if (!cache.IsNull()) {
+                    try {
+                        uint16_t version;
+                        uint64_t size;
+                        cache >> version >> size;
+                        if (version == 3 && size == file_size) {
+                            cache >> snapshot.tree.chunks;
+                            cached = true;
+                        }
+                    } catch (const std::exception&) { }
+                }
             }
+            if (!cached) {
+                snapshot.tree.chunks.clear();
+                DataStream header;
+                header << metadata;
+                snapshot.tree.chunks.push_back({Hash(header), static_cast<uint32_t>(header.size())});
+                while (static_cast<uint64_t>(file.tell()) < file_size) {
+                    const auto payload{ReadSnapshotChunk(file)};
+                    DataStream frame;
+                    WriteCompactSize(frame, payload.size());
+                    frame.write(MakeByteSpan(payload));
+                    snapshot.tree.chunks.push_back({Hash(frame), static_cast<uint32_t>(frame.size())});
+                }
+                AutoFile cache{fsbridge::fopen(sidecar, "wb")};
+                if (!cache.IsNull()) {
+                    try {
+                        cache << uint16_t{3} << file_size << snapshot.tree.chunks;
+                    } catch (const std::exception& e) {
+                        LogWarning("Failed to write snapshot sidecar: %s", e.what());
+                    }
+                    if (cache.fclose() != 0) LogWarning("Failed to close snapshot sidecar %s", fs::PathToString(sidecar));
+                }
+            }
+            uint64_t offset{0};
+            for (const auto& chunk : snapshot.tree.chunks) {
+                snapshot.offsets.push_back(offset);
+                offset += chunk.size;
+            }
+            if (offset != file_size || snapshot.tree.chunks.size() > MAX_UTXO_SET_CHUNKS) continue;
+            LogInfo("Serving UTXO set for block %s", metadata.m_base_blockhash.ToString());
+            m_snapshots.push_back(std::move(snapshot));
+        } catch (const std::exception& e) {
+            LogDebug(BCLog::UTXOSETSHARE, "Unable to read snapshot %s: %s", fs::PathToString(entry.path()), e.what());
         }
-
-        SnapshotData sd;
-        sd.path = entry.path();
-        sd.info.height = au_data->height;
-        sd.info.block_hash = au_data->blockhash;
-        sd.info.serialized_hash = uint256{std::span<const unsigned char>{au_data->hash_serialized.data(), 32}};
-        sd.info.data_length = file_size;
-        sd.info.merkle_root = merkle_root;
-        sd.leaf_hashes = std::move(leaf_hashes);
-
-        LogInfo("Serving UTXO set at height %d", sd.info.height);
-        m_snapshots.push_back(std::move(sd));
     }
-
     return m_snapshots.size();
 }
 
-std::vector<UTXOSetInfoEntry> UTXOSetShareProvider::GetInfoEntries() const
+std::optional<MsgUTXOTree> UTXOSetShareProvider::GetTree(const uint256& block_hash) const
 {
-    std::vector<UTXOSetInfoEntry> entries;
-    entries.reserve(m_snapshots.size());
-    for (const auto& sd : m_snapshots) {
-        entries.push_back(sd.info);
+    for (const auto& snapshot : m_snapshots) {
+        if (snapshot.tree.block_hash == block_hash) return snapshot.tree;
     }
-    return entries;
+    return std::nullopt;
 }
 
-std::optional<std::pair<std::vector<unsigned char>, std::vector<uint256>>> UTXOSetShareProvider::GetChunk(uint32_t height, const uint256& block_hash, uint32_t chunk_index) const
+std::optional<std::vector<unsigned char>> UTXOSetShareProvider::GetChunk(const uint256& block_hash, uint32_t chunk_index) const
 {
-    const SnapshotData* snapshot{nullptr};
-    for (const auto& sd : m_snapshots) {
-        if (sd.info.height == height && sd.info.block_hash == block_hash) {
-            snapshot = &sd;
-            break;
-        }
+    for (const auto& snapshot : m_snapshots) {
+        if (snapshot.tree.block_hash != block_hash || chunk_index >= snapshot.tree.chunks.size()) continue;
+        AutoFile file{fsbridge::fopen(snapshot.path, "rb")};
+        if (file.IsNull()) return std::nullopt;
+        std::vector<unsigned char> data(snapshot.tree.chunks[chunk_index].size);
+        file.seek(snapshot.offsets[chunk_index], SEEK_SET);
+        file.read(MakeWritableByteSpan(data));
+        return data;
     }
-    if (!snapshot) return std::nullopt;
-
-    std::vector<uint256> leaf_hashes = snapshot->leaf_hashes;
-    uint32_t total_chunks = leaf_hashes.size();
-    if (chunk_index >= total_chunks) return std::nullopt;
-
-    AutoFile file{fsbridge::fopen(snapshot->path, "rb")};
-    if (file.IsNull()) return std::nullopt;
-
-    uint64_t offset{chunk_index * UTXO_SET_CHUNK_SIZE};
-    file.seek(offset, SEEK_SET);
-    uint64_t chunk_size{UTXO_SET_CHUNK_SIZE};
-    if (chunk_index == total_chunks - 1) {
-        chunk_size = snapshot->info.data_length - offset;
-    }
-
-    std::vector<unsigned char> data(chunk_size);
-    file.read(MakeWritableByteSpan(data));
-
-    std::vector<uint256> proof{ComputeMerklePath(leaf_hashes, chunk_index)};
-
-    return std::make_pair(std::move(data), std::move(proof));
+    return std::nullopt;
 }
 
 bool UTXOSetDownloadManager::StartDownload(const uint256& target_blockhash,
-                                           const AssumeutxoData& au_data,
-                                           const fs::path& output_path)
+                                         const AssumeutxoData& au_data,
+                                         const fs::path& output_path)
 {
     LOCK(m_mutex);
     if (m_state != State::IDLE) return false;
-
     m_target_blockhash = target_blockhash;
     m_expected_chunk_merkle_root = au_data.chunk_merkle_root;
-    m_target_height = au_data.height;
     m_output_path = output_path;
     m_state = State::DISCOVERING;
-
-    LogInfo("UTXO set download started for height %d, blockhash=%s", m_target_height, m_target_blockhash.ToString());
     return true;
 }
 
-void UTXOSetDownloadManager::ProcessUTXOSetInfo(int64_t peer_id,
-                                                const std::vector<UTXOSetInfoEntry>& entries)
+uint256 UTXOSetDownloadManager::GetTargetBlockhash() const
 {
     LOCK(m_mutex);
-    if (m_state != State::DISCOVERING) return;
+    return m_target_blockhash;
+}
 
-    for (const auto& entry : entries) {
-        if (entry.block_hash != m_target_blockhash) continue;
-        if (entry.data_length <= 1) continue;
-        if (!m_expected_chunk_merkle_root.IsNull() &&
-            entry.merkle_root != m_expected_chunk_merkle_root) {
-            LogDebug(BCLog::UTXOSETSHARE,
-                     "Rejecting utxosetinfo from peer=%d: merkle_root %s does not match expected %s",
-                     peer_id, entry.merkle_root.ToString(),
-                     m_expected_chunk_merkle_root.ToString());
-            continue;
-        }
-
-        m_data_length = entry.data_length;
-        m_merkle_root = entry.merkle_root;
-        m_total_chunks = static_cast<uint32_t>((m_data_length - 1) / UTXO_SET_CHUNK_SIZE + 1);
-        m_chunks.assign(m_total_chunks, ChunkInfo{});
-        m_chunks_done = 0;
-        m_state = State::DOWNLOADING;
-
-        AutoFile file{fsbridge::fopen(m_output_path, "wb")};
-        if (file.IsNull()) {
-            LogWarning("Failed to create output file %s", fs::PathToString(m_output_path));
-            m_state = State::FAILED;
-            return;
-        }
-
-        LogInfo("UTXO set download: %d chunks to download (%d bytes), merkle_root=%s, from peer=%d",
-                m_total_chunks, m_data_length, m_merkle_root.ToString(), peer_id);
-        return;
+bool UTXOSetDownloadManager::ProcessUTXOTree(int64_t peer_id, const MsgUTXOTree& tree)
+{
+    LOCK(m_mutex);
+    if (m_state != State::DISCOVERING) return true;
+    if (tree.block_hash != m_target_blockhash || tree.version != 3 ||
+        tree.chunks.empty() || tree.chunks.size() > MAX_UTXO_SET_CHUNKS || tree.chunks.front().size != 51) return false;
+    for (size_t i{1}; i < tree.chunks.size(); ++i) {
+        if (tree.chunks[i].size < 35 || tree.chunks[i].size > SNAPSHOT_CHUNK_SIZE + 5) return false;
     }
+    const auto root{ComputeUTXOSetMerkleRoot(tree.chunks)};
+    if (!m_expected_chunk_merkle_root.IsNull() && root != m_expected_chunk_merkle_root) return false;
 
-    LogDebug(BCLog::UTXOSETSHARE, "No matching UTXO set info from peer=%d", peer_id);
+    m_chunks.clear();
+    uint64_t offset{0};
+    for (const auto& expected : tree.chunks) {
+        ChunkInfo chunk;
+        chunk.offset = offset;
+        chunk.expected = expected;
+        m_chunks.push_back(chunk);
+        offset += expected.size;
+    }
+    m_chunks_done = 0;
+    AutoFile file{fsbridge::fopen(m_output_path, "wb")};
+    if (file.IsNull() || file.fclose() != 0) {
+        m_state = State::FAILED;
+        return true;
+    }
+    m_state = State::DOWNLOADING;
+    LogInfo("UTXO set download: %d chunks (%d bytes), from peer=%d", m_chunks.size(), offset, peer_id);
+    return true;
 }
 
 bool UTXOSetDownloadManager::ProcessUTXOSetChunk(int64_t peer_id, const MsgUTXOSet& chunk)
 {
-    fs::path output_path;
-    uint64_t offset;
-
-    {
-        LOCK(m_mutex);
-        if (m_state != State::DOWNLOADING) return true;
-
-        if (chunk.height != m_target_height ||
-            chunk.block_hash != m_target_blockhash ||
-            chunk.chunk_index >= m_total_chunks) {
-            return false;
-        }
-
-        // Validate chunk data size against what data_length implies
-        uint64_t expected_size{UTXO_SET_CHUNK_SIZE};
-        if (chunk.chunk_index == m_total_chunks - 1) {
-            expected_size = m_data_length - (m_total_chunks - 1) * UTXO_SET_CHUNK_SIZE;
-        }
-        if (chunk.data.size() != expected_size) {
-            LogDebug(BCLog::UTXOSETSHARE, "Unexpected chunk size %zu (expected %zu) for chunk %d from peer=%d", chunk.data.size(), expected_size, chunk.chunk_index, peer_id);
-            return false;
-        }
-
-        auto& ci = m_chunks[chunk.chunk_index];
-        if (ci.state == ChunkState::DONE) return true; // duplicate, ignore
-
-        // Verify Merkle proof
-        uint256 leaf_hash{Hash(chunk.data)};
-        if (!VerifyChunkMerkleProof(leaf_hash, chunk.proof_hashes, chunk.chunk_index, m_total_chunks, m_merkle_root)) {
-            LogDebug(BCLog::UTXOSETSHARE, "Invalid Merkle proof for chunk %d from peer=%d", chunk.chunk_index, peer_id);
-            return false;
-        }
-
-        ci.state = ChunkState::DONE;
-        ci.assigned_peer = -1;
-        ++m_chunks_done;
-
-        LogDebug(BCLog::UTXOSETSHARE, "Chunk %d/%d verified (peer=%d)", m_chunks_done, m_total_chunks, peer_id);
-
-        output_path = m_output_path;
-        offset = chunk.chunk_index * UTXO_SET_CHUNK_SIZE;
-    }
-
-    // Write chunk data to file outside the lock
-    AutoFile file{fsbridge::fopen(output_path, "rb+")};
-    if (file.IsNull()) {
-        LOCK(m_mutex);
-        m_state = State::FAILED;
-        return true;
-    }
-    file.seek(offset, SEEK_SET);
-    file.write(MakeByteSpan(chunk.data));
-    if (!file.Commit() || file.fclose() != 0) {
-        LOCK(m_mutex);
-        m_state = State::FAILED;
-        return true;
-    }
-
-    // Re-lock to check if all chunks are now written
     LOCK(m_mutex);
     if (m_state != State::DOWNLOADING) return true;
-    if (m_chunks_done == m_total_chunks) {
+    if (chunk.block_hash != m_target_blockhash || chunk.chunk_index >= m_chunks.size()) return false;
+    auto& info{m_chunks[chunk.chunk_index]};
+    if (chunk.data.size() != info.expected.size || Hash(chunk.data) != info.expected.hash) return false;
+    if (info.state == ChunkState::DONE) return true;
+
+    // Mark a chunk complete only after the write succeeds. Keep completion and
+    // file writes serialized so activation cannot race an outstanding write.
+    AutoFile file{fsbridge::fopen(m_output_path, "rb+")};
+    try {
+        if (file.IsNull()) throw std::ios_base::failure("Cannot open snapshot download");
+        file.seek(info.offset, SEEK_SET);
+        file.write(MakeByteSpan(chunk.data));
+        if (!file.Commit()) throw std::ios_base::failure("Cannot commit snapshot chunk");
+    } catch (const std::exception& e) {
+        LogWarning("Unable to write snapshot chunk: %s", e.what());
+        m_state = State::FAILED;
+    }
+    if (file.fclose() != 0) m_state = State::FAILED;
+    if (m_state == State::FAILED) return true;
+    info.state = ChunkState::DONE;
+    info.assigned_peer = -1;
+    if (++m_chunks_done == m_chunks.size()) {
         m_state = State::COMPLETE;
         LogInfo("UTXO set download complete: %s", fs::PathToString(m_output_path));
     }
-
     return true;
 }
 
@@ -358,14 +216,13 @@ std::optional<MsgGetUTXOSet> UTXOSetDownloadManager::GetNextChunkRequest(int64_t
     LOCK(m_mutex);
     if (m_state != State::DOWNLOADING) return std::nullopt;
 
-    for (uint32_t i = 0; i < m_total_chunks; ++i) {
+    for (uint32_t i = 0; i < m_chunks.size(); ++i) {
         if (m_chunks[i].state == ChunkState::NEEDED) {
             m_chunks[i].state = ChunkState::IN_FLIGHT;
             m_chunks[i].assigned_peer = peer_id;
             m_chunks[i].request_time = std::chrono::time_point_cast<std::chrono::seconds>(SteadyClock::now());
 
             MsgGetUTXOSet req;
-            req.height = m_target_height;
             req.block_hash = m_target_blockhash;
             req.chunk_index = i;
             return req;

@@ -420,7 +420,7 @@ struct Peer {
     std::atomic<std::chrono::seconds> m_time_offset{0s};
 
     /** Whether we have registered this peer for UTXO set interaction */
-    bool m_sent_getutxostinf GUARDED_BY(NetEventsInterface::g_msgproc_mutex){false};
+    bool m_sent_getutxotree GUARDED_BY(NetEventsInterface::g_msgproc_mutex){false};
 
     explicit Peer(NodeId id, ServiceFlags our_services, bool is_inbound)
         : m_id{id}
@@ -1083,8 +1083,8 @@ private:
      */
     void ProcessGetCFCheckPt(CNode& node, Peer& peer, DataStream& vRecv);
 
-    /** Handle a getutxostinf request. Responds with utxosetinfo listing available snapshots. */
-    void ProcessGetUTXOSetInfo(CNode& node, Peer& peer);
+    /** Handle a getutxotree request. Responds with utxotree listing available snapshots. */
+    void ProcessGetUTXOTree(CNode& node, Peer& peer, DataStream& vRecv);
 
     /** Handle a getutxoset request. Responds with a single chunk and its Merkle proof. */
     void ProcessGetUTXOSet(CNode& node, Peer& peer, DataStream& vRecv) EXCLUSIVE_LOCKS_REQUIRED(g_msgproc_mutex);
@@ -3449,12 +3449,15 @@ void PeerManagerImpl::ProcessGetCFCheckPt(CNode& node, Peer& peer, DataStream& v
               headers);
 }
 
-void PeerManagerImpl::ProcessGetUTXOSetInfo(CNode& node, Peer& peer)
+void PeerManagerImpl::ProcessGetUTXOTree(CNode& node, Peer& peer, DataStream& vRecv)
 {
     if (!(peer.m_our_services & NODE_UTXO_SET)) return;
 
-    auto entries{m_opts.utxo_set_share_provider->GetInfoEntries()};
-    MakeAndPushMessage(node, NetMsgType::UTXOSETINFO, entries);
+    uint256 block_hash;
+    vRecv >> block_hash;
+    if (auto tree{m_opts.utxo_set_share_provider->GetTree(block_hash)}) {
+        MakeAndPushMessage(node, NetMsgType::UTXOTREE, *tree);
+    }
 }
 
 void PeerManagerImpl::ProcessGetUTXOSet(CNode& node, Peer& peer, DataStream& vRecv)
@@ -3463,22 +3466,18 @@ void PeerManagerImpl::ProcessGetUTXOSet(CNode& node, Peer& peer, DataStream& vRe
     node::MsgGetUTXOSet request;
     vRecv >> request;
 
-    auto result{m_opts.utxo_set_share_provider->GetChunk(request.height, request.block_hash, request.chunk_index)};
+    auto result{m_opts.utxo_set_share_provider->GetChunk(request.block_hash, request.chunk_index)};
     if (!result) {
-        LogDebug(BCLog::UTXOSETSHARE, "Invalid getutxoset request: chunk %d for height=%d from peer=%d, disconnecting",
-                 request.chunk_index, request.height, node.GetId());
+        LogDebug(BCLog::UTXOSETSHARE, "Invalid getutxoset request: chunk %d from peer=%d, disconnecting",
+                 request.chunk_index, node.GetId());
         node.fDisconnect = true;
         return;
     }
 
-    auto& [data, proof] = *result;
-
     node::MsgUTXOSet response;
-    response.height = request.height;
     response.block_hash = request.block_hash;
     response.chunk_index = request.chunk_index;
-    response.proof_hashes = std::move(proof);
-    response.data = std::move(data);
+    response.data = std::move(*result);
 
     MakeAndPushMessage(node, NetMsgType::UTXOSET, response);
 }
@@ -5153,17 +5152,17 @@ void PeerManagerImpl::ProcessMessage(Peer& peer, CNode& pfrom, const std::string
         return;
     }
 
-    if (msg_type == NetMsgType::GETUTXOSETINFO) {
-        ProcessGetUTXOSetInfo(pfrom, peer);
+    if (msg_type == NetMsgType::GETUTXOTREE) {
+        ProcessGetUTXOTree(pfrom, peer, vRecv);
         return;
     }
 
-    if (msg_type == NetMsgType::UTXOSETINFO) {
+    if (msg_type == NetMsgType::UTXOTREE) {
         if (!m_opts.utxo_set_download_manager) return;
-        if (!peer.m_sent_getutxostinf) return;
-        std::vector<node::UTXOSetInfoEntry> entries;
-        vRecv >> entries;
-        m_opts.utxo_set_download_manager->ProcessUTXOSetInfo(pfrom.GetId(), entries);
+        if (!peer.m_sent_getutxotree) return;
+        node::MsgUTXOTree tree;
+        vRecv >> tree;
+        if (!m_opts.utxo_set_download_manager->ProcessUTXOTree(pfrom.GetId(), tree)) pfrom.fDisconnect = true;
         return;
     }
 
@@ -6353,10 +6352,10 @@ bool PeerManagerImpl::SendMessages(CNode& node)
         auto* dm{m_opts.utxo_set_download_manager};
         auto state{dm->GetState()};
 
-        if (!peer.m_sent_getutxostinf) {
+        if (!peer.m_sent_getutxotree) {
             if (state == node::UTXOSetDownloadManager::State::DISCOVERING) {
-                MakeAndPushMessage(node, NetMsgType::GETUTXOSETINFO);
-                peer.m_sent_getutxostinf = true;
+                MakeAndPushMessage(node, NetMsgType::GETUTXOTREE, dm->GetTargetBlockhash());
+                peer.m_sent_getutxotree = true;
             }
         }
 

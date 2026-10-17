@@ -69,7 +69,7 @@ from test_framework.messages import (
     msg_tx,
     MSG_TX,
     msg_utxoset,
-    msg_utxosetinfo,
+    msg_utxotree,
     MSG_TYPE_MASK,
     msg_verack,
     msg_version,
@@ -151,7 +151,7 @@ MESSAGEMAP = {
     b"sendtxrcncl": msg_sendtxrcncl,
     b"tx": msg_tx,
     b"utxoset": msg_utxoset,
-    b"utxosetinfo": msg_utxosetinfo,
+    b"utxotree": msg_utxotree,
     b"verack": msg_verack,
     b"version": msg_version,
     b"wtxidrelay": msg_wtxidrelay,
@@ -567,7 +567,7 @@ class P2PInterface(P2PConnection):
     def on_sendtxrcncl(self, message): pass
     def on_tx(self, message): pass
     def on_utxoset(self, message): pass
-    def on_utxosetinfo(self, message): pass
+    def on_utxotree(self, message): pass
     def on_wtxidrelay(self, message): pass
 
     def on_inv(self, message):

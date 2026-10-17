@@ -23,101 +23,51 @@ struct AssumeutxoData;
 
 namespace node {
 
-static constexpr uint64_t UTXO_SET_CHUNK_SIZE = 3'900'000;
+//! Bound the single announcement to less than the 4 MB P2P message limit.
+inline constexpr size_t MAX_UTXO_SET_CHUNKS{100'000};
 
-/** Verify a Merkle proof for a chunk against a known root */
-bool VerifyChunkMerkleProof(const uint256& leaf_hash,
-                            const std::vector<uint256>& proof,
-                            uint32_t chunk_index,
-                            uint32_t total_chunks,
-                            const uint256& merkle_root);
-
-/** Entry in a utxosetinfo message, describing an available UTXO set. */
-struct UTXOSetInfoEntry {
-    uint32_t height{0};
-    uint256 block_hash;
-    uint256 serialized_hash;
-    uint64_t data_length{0};
-    uint256 merkle_root;
-
-    SERIALIZE_METHODS(UTXOSetInfoEntry, obj)
-    {
-        READWRITE(obj.height);
-        READWRITE(obj.block_hash);
-        READWRITE(obj.serialized_hash);
-        READWRITE(obj.data_length);
-        READWRITE(obj.merkle_root);
-    }
+struct UTXOSetChunk {
+    uint256 hash;
+    uint32_t size{0};
+    SERIALIZE_METHODS(UTXOSetChunk, obj) { READWRITE(obj.hash, obj.size); }
 };
 
-/** getutxoset message: request a chunk of UTXO set data. */
+uint256 ComputeUTXOSetMerkleRoot(const std::vector<UTXOSetChunk>& chunks);
+
+struct MsgUTXOTree {
+    uint256 block_hash;
+    uint16_t version{3};
+    std::vector<UTXOSetChunk> chunks;
+    SERIALIZE_METHODS(MsgUTXOTree, obj) { READWRITE(obj.block_hash, obj.version, obj.chunks); }
+};
+
 struct MsgGetUTXOSet {
-    uint32_t height{0};
     uint256 block_hash;
     uint32_t chunk_index{0};
-
-    SERIALIZE_METHODS(MsgGetUTXOSet, obj)
-    {
-        READWRITE(obj.height);
-        READWRITE(obj.block_hash);
-        READWRITE(obj.chunk_index);
-    }
+    SERIALIZE_METHODS(MsgGetUTXOSet, obj) { READWRITE(obj.block_hash, obj.chunk_index); }
 };
 
-/** utxoset message: one chunk of UTXO set data with the Merkle proof. */
 struct MsgUTXOSet {
-    uint32_t height{0};
     uint256 block_hash;
     uint32_t chunk_index{0};
-    std::vector<uint256> proof_hashes;
     std::vector<unsigned char> data;
-
-    SERIALIZE_METHODS(MsgUTXOSet, obj)
-    {
-        READWRITE(obj.height);
-        READWRITE(obj.block_hash);
-        READWRITE(obj.chunk_index);
-        READWRITE(obj.proof_hashes);
-        READWRITE(obj.data);
-    }
+    SERIALIZE_METHODS(MsgUTXOSet, obj) { READWRITE(obj.block_hash, obj.chunk_index, obj.data); }
 };
 
-/** Sidecar file with leaf hashes and Merkle root */
-struct ChunkMerkleCache {
-    uint64_t snapshot_file_size{0};
-    std::vector<uint256> leaf_hashes;
-    uint256 merkle_root;
-
-    SERIALIZE_METHODS(ChunkMerkleCache, obj)
-    {
-        READWRITE(obj.snapshot_file_size);
-        READWRITE(obj.leaf_hashes);
-        READWRITE(obj.merkle_root);
-    }
-};
-
-/** Serves UTXO set chunks and Merkle proofs for snapshot files in the share dir */
+/** Serves independently decodable version 3 snapshot chunks. */
 class UTXOSetShareProvider
 {
 public:
-    /** Scan share dir for valid snapshot files, load or compute sidecar
-     *  caches. Returns the number of snapshots ready to serve. */
     size_t Initialize(const fs::path& share_dir, const CChainParams& params);
-
-    /** Get info entries for all available snapshots */
-    std::vector<UTXOSetInfoEntry> GetInfoEntries() const;
-
-    /** Read a chunk from the snapshot identified by (height, block_hash).
-     *  Returns {chunk_data, merkle_proof}, or nullopt if not found. */
-    std::optional<std::pair<std::vector<unsigned char>, std::vector<uint256>>> GetChunk(uint32_t height, const uint256& block_hash, uint32_t chunk_index) const;
+    std::optional<MsgUTXOTree> GetTree(const uint256& block_hash) const;
+    std::optional<std::vector<unsigned char>> GetChunk(const uint256& block_hash, uint32_t chunk_index) const;
 
 private:
     struct SnapshotData {
         fs::path path;
-        UTXOSetInfoEntry info;
-        std::vector<uint256> leaf_hashes;
+        MsgUTXOTree tree;
+        std::vector<uint64_t> offsets;
     };
-
     std::vector<SnapshotData> m_snapshots;
 };
 
@@ -133,14 +83,13 @@ public:
                        const AssumeutxoData& au_data,
                        const fs::path& output_path) EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
 
-    /** Process a utxosetinfo response from a peer. Selects the matching
-     *  entry and transitions to DOWNLOADING if valid. */
-    void ProcessUTXOSetInfo(int64_t peer_id,
-                            const std::vector<UTXOSetInfoEntry>& entries) EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
+    /** Authenticate the chunk list against the expected snapshot commitment. */
+    bool ProcessUTXOTree(int64_t peer_id, const MsgUTXOTree& tree) EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
 
-    /** Process a received chunk. Verifies the Merkle proof and writes to
-     *  the output file. Returns false if the proof is invalid. */
+    /** Verify a chunk against the announced hash and size, then write it. */
     bool ProcessUTXOSetChunk(int64_t peer_id, const MsgUTXOSet& chunk) EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
+
+    uint256 GetTargetBlockhash() const EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
 
     /** Get the next chunk request to send to a peer, or nullopt if none
      *  available. Marks the chunk as in-flight for this peer. */
@@ -168,6 +117,8 @@ private:
         ChunkState state{ChunkState::NEEDED};
         int64_t assigned_peer{-1};
         SteadySeconds request_time{};
+        uint64_t offset{0};
+        UTXOSetChunk expected;
     };
 
     mutable Mutex m_mutex;
@@ -178,10 +129,6 @@ private:
     // Target snapshot info
     uint256 m_target_blockhash GUARDED_BY(m_mutex);
     uint256 m_expected_chunk_merkle_root GUARDED_BY(m_mutex);
-    uint32_t m_target_height GUARDED_BY(m_mutex){0};
-    uint64_t m_data_length GUARDED_BY(m_mutex){0};
-    uint256 m_merkle_root GUARDED_BY(m_mutex);
-    uint32_t m_total_chunks GUARDED_BY(m_mutex){0};
 
     std::vector<ChunkInfo> m_chunks GUARDED_BY(m_mutex);
     uint32_t m_chunks_done GUARDED_BY(m_mutex){0};

@@ -48,7 +48,7 @@ struct AssumeutxoData {
     uint256 blockhash;
 
     //! The expected Merkle root of the snapshot file chunked into
-    //! UTXO_SET_CHUNK_SIZE-byte pieces and hashed with SHA256d. Used to verify
+    //! independently decodable chunks, committing to their sizes and hashes. Used to verify
     //! integrity of peer-advertised chunk trees during P2P UTXO set downloads.
     //! A null value means the root is unknown and validation is skipped.
     uint256 chunk_merkle_root;

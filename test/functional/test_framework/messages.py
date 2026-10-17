@@ -1385,125 +1385,100 @@ class msg_block:
         return "msg_block(block=%s)" % (repr(self.block))
 
 
-class UTXOSetInfoEntry:
-    __slots__ = ("height", "block_hash", "serialized_hash", "data_length", "merkle_root")
+class UTXOSetChunk:
+    __slots__ = ("hash", "size")
 
-    def __init__(self, height=0, block_hash=0, serialized_hash=0, data_length=0, merkle_root=0):
-        self.height = height
+    def __init__(self, hash=0, size=0):
+        self.hash = hash
+        self.size = size
+
+    def deserialize(self, f):
+        self.hash = deser_uint256(f)
+        self.size = int.from_bytes(f.read(4), "little")
+
+    def serialize(self):
+        return ser_uint256(self.hash) + self.size.to_bytes(4, "little")
+
+    def __repr__(self):
+        return f"UTXOSetChunk(hash={self.hash:064x}, size={self.size})"
+
+
+class msg_getutxotree:
+    __slots__ = ("block_hash",)
+    msgtype = b"getutxotree"
+
+    def __init__(self, block_hash=0):
         self.block_hash = block_hash
-        self.serialized_hash = serialized_hash
-        self.data_length = data_length
-        self.merkle_root = merkle_root
 
     def deserialize(self, f):
-        self.height = int.from_bytes(f.read(4), "little")
         self.block_hash = deser_uint256(f)
-        self.serialized_hash = deser_uint256(f)
-        self.data_length = int.from_bytes(f.read(8), "little")
-        self.merkle_root = deser_uint256(f)
 
     def serialize(self):
-        r = b""
-        r += self.height.to_bytes(4, "little")
-        r += ser_uint256(self.block_hash)
-        r += ser_uint256(self.serialized_hash)
-        r += self.data_length.to_bytes(8, "little")
-        r += ser_uint256(self.merkle_root)
-        return r
+        return ser_uint256(self.block_hash)
 
     def __repr__(self):
-        return "UTXOSetInfoEntry(height=%d)" % self.height
+        return f"msg_getutxotree(block_hash={self.block_hash:064x})"
 
 
-class msg_getutxostinf:
-    __slots__ = ()
-    msgtype = b"getutxostinf"
+class msg_utxotree:
+    __slots__ = ("block_hash", "version", "chunks")
+    msgtype = b"utxotree"
 
-    def __init__(self):
-        pass
+    def __init__(self, block_hash=0, version=3, chunks=None):
+        self.block_hash = block_hash
+        self.version = version
+        self.chunks = chunks or []
 
     def deserialize(self, f):
-        pass
+        self.block_hash = deser_uint256(f)
+        self.version = int.from_bytes(f.read(2), "little")
+        self.chunks = deser_vector(f, UTXOSetChunk)
 
     def serialize(self):
-        return b""
+        return ser_uint256(self.block_hash) + self.version.to_bytes(2, "little") + ser_vector(self.chunks)
 
     def __repr__(self):
-        return "msg_getutxostinf()"
-
-
-class msg_utxosetinfo:
-    __slots__ = ("entries",)
-    msgtype = b"utxosetinfo"
-
-    def __init__(self):
-        self.entries = []
-
-    def deserialize(self, f):
-        self.entries = deser_vector(f, UTXOSetInfoEntry)
-
-    def serialize(self):
-        return ser_vector(self.entries)
-
-    def __repr__(self):
-        return "msg_utxosetinfo(entries=%d)" % len(self.entries)
+        return f"msg_utxotree(block_hash={self.block_hash:064x}, version={self.version}, chunks={len(self.chunks)})"
 
 
 class msg_getutxoset:
-    __slots__ = ("height", "block_hash", "chunk_index")
+    __slots__ = ("block_hash", "chunk_index")
     msgtype = b"getutxoset"
 
-    def __init__(self, height=0, block_hash=0, chunk_index=0):
-        self.height = height
+    def __init__(self, block_hash=0, chunk_index=0):
         self.block_hash = block_hash
         self.chunk_index = chunk_index
 
     def deserialize(self, f):
-        self.height = int.from_bytes(f.read(4), "little")
         self.block_hash = deser_uint256(f)
         self.chunk_index = int.from_bytes(f.read(4), "little")
 
     def serialize(self):
-        r = b""
-        r += self.height.to_bytes(4, "little")
-        r += ser_uint256(self.block_hash)
-        r += self.chunk_index.to_bytes(4, "little")
-        return r
+        return ser_uint256(self.block_hash) + self.chunk_index.to_bytes(4, "little")
 
     def __repr__(self):
-        return "msg_getutxoset(height=%d, chunk_index=%d)" % (self.height, self.chunk_index)
+        return f"msg_getutxoset(block_hash={self.block_hash:064x}, chunk_index={self.chunk_index})"
 
 
 class msg_utxoset:
-    __slots__ = ("height", "block_hash", "chunk_index", "proof_hashes", "data")
+    __slots__ = ("block_hash", "chunk_index", "data")
     msgtype = b"utxoset"
 
-    def __init__(self, height=0, block_hash=0, chunk_index=0, proof_hashes=None, data=b""):
-        self.height = height
+    def __init__(self, block_hash=0, chunk_index=0, data=b""):
         self.block_hash = block_hash
         self.chunk_index = chunk_index
-        self.proof_hashes = proof_hashes or []
         self.data = data
 
     def deserialize(self, f):
-        self.height = int.from_bytes(f.read(4), "little")
         self.block_hash = deser_uint256(f)
         self.chunk_index = int.from_bytes(f.read(4), "little")
-        self.proof_hashes = deser_uint256_vector(f)
         self.data = deser_string(f)
 
     def serialize(self):
-        r = b""
-        r += self.height.to_bytes(4, "little")
-        r += ser_uint256(self.block_hash)
-        r += self.chunk_index.to_bytes(4, "little")
-        r += ser_uint256_vector(self.proof_hashes)
-        r += ser_string(self.data)
-        return r
+        return ser_uint256(self.block_hash) + self.chunk_index.to_bytes(4, "little") + ser_string(self.data)
 
     def __repr__(self):
-        return "msg_utxoset(height=%d, chunk_index=%d, data_len=%d)" % (
-            self.height, self.chunk_index, len(self.data))
+        return f"msg_utxoset(block_hash={self.block_hash:064x}, chunk_index={self.chunk_index}, data_len={len(self.data)})"
 
 
 # Generic type to control the raw bytes sent over the wire.

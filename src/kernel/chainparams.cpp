@@ -636,7 +636,7 @@ public:
                 .hash_serialized = AssumeutxoHash{uint256{"d2b051ff5e8eef46520350776f4100dd710a63447a8e01d917e92e79751a63e2"}},
                 .m_chain_tx_count = 334,
                 .blockhash = uint256{"7cc695046fec709f8c9394b6f928f81e81fd3ac20977bb68760fa1faa7916ea2"},
-                .chunk_merkle_root = uint256{"c784320960f54ec9216647153b215440a2cdc99b532c1c0839dc88a6cf19eb46"},
+                .chunk_merkle_root = uint256{"e4b897c61c1524fa3cee065d06001eda5d23a34ecb9dc684dcc890dc8f4ac4df"},
             },
         };
 
