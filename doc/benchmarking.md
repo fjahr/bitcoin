@@ -71,6 +71,33 @@ restricted to the same input set (introducing bias). [Fuzz
 tests](/doc/fuzzing.md) are better suited for this purpose, as they are
 specifically aimed at exploring the possible input space.
 
+
+Mainnet UTXO snapshot import
+---------------------------
+
+`SnapshotImportMainnet` measures a complete version 3 snapshot import into a fresh
+on-disk database, including database close. It uses the sequential decoder,
+outpoint-order checks, incremental UTXO hash and bounded database writer used by
+snapshot activation. It excludes networking and header synchronization.
+
+This benchmark is opt-in and does no work unless `BITCOIN_BENCH_SNAPSHOT` names
+a mainnet snapshot. The base must have an AssumeUTXO commitment in the chain
+parameters or match the verified benchmark fixture at height 965,000. The fixture
+does not change which snapshots the node accepts.
+
+```sh
+BITCOIN_BENCH_SNAPSHOT=/path/to/utxo-965000-v3.dat \
+  build/bin/bench_bitcoin -filter=SnapshotImportMainnet \
+  -testdatadir=/path/on/ssd/benchmark-temp
+```
+
+Use an optimized build and a temporary directory on the storage device being
+measured. Allow about 12 GiB for the benchmark chainstate for this snapshot. It
+runs one iteration, using an 8 MiB database cache and the writer's two bounded
+batches. The benchmark checks the complete coin count, ordering and UTXO
+commitment before publishing the database's best block. An unset snapshot path
+makes ordinary benchmark and sanity-check runs skip this import.
+
 Going Further
 --------------------
 
