@@ -40,6 +40,8 @@ protected:
 public:
     explicit CCoinsViewDB(DBParams db_params, CoinsViewOptions options);
 
+    class SnapshotWriter;
+
     std::optional<Coin> GetCoin(const COutPoint& outpoint) const override;
     bool HaveCoin(const COutPoint &outpoint) const override;
     uint256 GetBestBlock() const override;
@@ -53,6 +55,25 @@ public:
 
     //! Dynamically alter the underlying leveldb cache size.
     void ResizeCache(size_t new_cache_size) EXCLUSIVE_LOCKS_REQUIRED(cs_main);
+};
+
+/** Bulk load a fresh, private snapshot database without a coins hash-map cache.
+ * The caller must validate coins and reject duplicate outpoints. Partial writes
+ * are disposable: the database has no best block until Finish() succeeds.
+ * The database must outlive the writer and must not be used concurrently.
+ */
+class CCoinsViewDB::SnapshotWriter
+{
+    CDBWrapper& m_db;
+    const size_t m_batch_bytes;
+    CDBBatch m_batch;
+
+    void Flush();
+
+public:
+    explicit SnapshotWriter(CCoinsViewDB& db);
+    void AddCoin(const COutPoint& outpoint, const Coin& coin);
+    void Finish(const uint256& block_hash);
 };
 
 #endif // BITCOIN_TXDB_H

@@ -1048,8 +1048,24 @@ void TestFlushBehavior(
 
 BOOST_FIXTURE_TEST_CASE(ccoins_flush_behavior, FlushTest)
 {
-    // Create two in-memory caches atop a leveldb view.
-    CCoinsViewDB base{{.path = "test", .cache_bytes = 1 << 23, .memory_only = true}, {}};
+    // Populate a fresh database in small batches before normal cache operations.
+    CCoinsViewDB base{{.path = "test", .cache_bytes = 1 << 23, .memory_only = true}, {.batch_write_bytes = 100}};
+    const auto txid{Txid::FromUint256(m_rng.rand256())};
+    const Coin coin{CTxOut{123, CScript{} << OP_TRUE}, 1, false};
+    {
+        CCoinsViewDB::SnapshotWriter writer{base};
+        for (uint32_t n{0}; n < 1000; ++n) writer.AddCoin(COutPoint{txid, n}, coin);
+        BOOST_CHECK(base.GetBestBlock().IsNull());
+        writer.Finish(txid.ToUint256());
+    }
+    BOOST_CHECK(base.GetBestBlock() == txid.ToUint256());
+    for (uint32_t n{0}; n < 1000; ++n) {
+        const auto loaded{base.GetCoin(COutPoint{txid, n})};
+        BOOST_REQUIRE(loaded);
+        BOOST_CHECK(*loaded == coin);
+    }
+
+    // Create two in-memory caches atop the populated leveldb view.
     std::vector<std::unique_ptr<CCoinsViewCacheTest>> caches;
     caches.push_back(std::make_unique<CCoinsViewCacheTest>(&base));
     caches.push_back(std::make_unique<CCoinsViewCacheTest>(caches.back().get()));

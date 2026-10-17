@@ -5732,17 +5732,6 @@ util::Result<CBlockIndex*> ChainstateManager::ActivateSnapshot(
     return snapshot_start_block;
 }
 
-static void FlushSnapshotToDisk(CCoinsViewCache& coins_cache, bool snapshot_loaded)
-{
-    LOG_TIME_MILLIS_WITH_CATEGORY_MSG_ONCE(
-        strprintf("%s (%.2f MB)",
-                  snapshot_loaded ? "saving snapshot chainstate" : "flushing coins cache",
-                  coins_cache.DynamicMemoryUsage() / (1000 * 1000)),
-        BCLog::LogFlags::ALL);
-
-    coins_cache.Flush();
-}
-
 struct StopHashingException : public std::exception
 {
     const char* what() const noexcept override
@@ -5761,9 +5750,9 @@ util::Result<void> ChainstateManager::PopulateAndValidateSnapshot(
     const std::function<DataStream()>& read_chunk,
     const SnapshotMetadata& metadata)
 {
-    // It's okay to release cs_main before we're done using `coins_cache` because we know
-    // that nothing else will be referencing the newly created snapshot_chainstate yet.
-    CCoinsViewCache& coins_cache = *WITH_LOCK(::cs_main, return &snapshot_chainstate.CoinsTip());
+    // This private chainstate is not exposed until the complete snapshot has
+    // been validated. Write bounded batches directly to its empty database.
+    CCoinsViewDB::SnapshotWriter writer{*WITH_LOCK(::cs_main, return &snapshot_chainstate.CoinsDB())};
 
     uint256 base_blockhash = metadata.m_base_blockhash;
 
@@ -5836,39 +5825,19 @@ util::Result<void> ChainstateManager::PopulateAndValidateSnapshot(
                 }
                 previous_outpoint = outpoint;
                 kernel::ApplyCoinHash(hasher, outpoint, coin);
-                coins_cache.EmplaceCoinInternalDANGER(std::move(outpoint), std::move(coin));
+                writer.AddCoin(outpoint, coin);
 
                 --coins_left;
                 ++coins_processed;
 
                 if (coins_processed % 1000000 == 0) {
-                    LogInfo("[snapshot] %d coins loaded (%.2f%%, %.2f MB)",
+                    LogInfo("[snapshot] %d coins loaded (%.2f%%)",
                         coins_processed,
-                        static_cast<float>(coins_processed) * 100 / static_cast<float>(coins_count),
-                        coins_cache.DynamicMemoryUsage() / (1000 * 1000));
+                        static_cast<float>(coins_processed) * 100 / static_cast<float>(coins_count));
                 }
 
-                // Batch write and flush (if we need to) every so often.
-                //
-                // If our average Coin size is roughly 41 bytes, checking every 120,000 coins
-                // means <5MB of memory imprecision.
-                if (coins_processed % 120000 == 0) {
-                    if (m_interrupt) {
-                        return util::Error{Untranslated("Aborting after an interrupt was requested")};
-                    }
-
-                    const auto snapshot_cache_state = WITH_LOCK(::cs_main,
-                        return snapshot_chainstate.GetCoinsCacheSizeState());
-
-                    if (snapshot_cache_state >= CoinsCacheSizeState::CRITICAL) {
-                        // This is a hack - we don't know what the actual best block is, but that
-                        // doesn't matter for the purposes of flushing the cache here. We'll set this
-                        // to its correct value (`base_blockhash`) below after the coins are loaded.
-                        coins_cache.SetBestBlock(GetRandHash());
-
-                        // No need to acquire cs_main since this chainstate isn't being used yet.
-                        FlushSnapshotToDisk(coins_cache, /*snapshot_loaded=*/false);
-                    }
+                if (coins_processed % 120000 == 0 && m_interrupt) {
+                    return util::Error{Untranslated("Aborting after an interrupt was requested")};
                 }
             }
             if (chunk.empty()) LogDebug(BCLog::UTXOSETSHARE, "[snapshot] processed %d coins", coins_processed);
@@ -5877,13 +5846,6 @@ util::Result<void> ChainstateManager::PopulateAndValidateSnapshot(
                       coins_processed))};
         }
     }
-
-    // Important that we set this. This and the coins_cache accesses above are
-    // sort of a layer violation, but either we reach into the innards of
-    // CCoinsViewCache here or we have to invert some of the Chainstate to
-    // embed them in a snapshot-activation-specific CCoinsViewCache bulk load
-    // method.
-    coins_cache.SetBestBlock(base_blockhash);
 
     if (!chunk.empty()) {
         return util::Error{Untranslated(strprintf("Bad snapshot - coins left over after deserializing %d coins", coins_processed))};
@@ -5899,15 +5861,7 @@ util::Result<void> ChainstateManager::PopulateAndValidateSnapshot(
             coins_count))};
     }
 
-    LogInfo("[snapshot] loaded %d (%.2f MB) coins from snapshot %s",
-        coins_count,
-        coins_cache.DynamicMemoryUsage() / (1000 * 1000),
-        base_blockhash.ToString());
-
-    // No need to acquire cs_main since this chainstate isn't being used yet.
-    FlushSnapshotToDisk(coins_cache, /*snapshot_loaded=*/true);
-
-    assert(coins_cache.GetBestBlock() == base_blockhash);
+    LogInfo("[snapshot] loaded %d coins from snapshot %s", coins_count, base_blockhash.ToString());
 
     // Version 3 provides precisely the order used by HASH_SERIALIZED. Hash
     // the decoded coins during insertion rather than scanning the database
@@ -5917,6 +5871,10 @@ util::Result<void> ChainstateManager::PopulateAndValidateSnapshot(
         return util::Error{Untranslated(strprintf("Bad snapshot content hash: expected %s, got %s",
             au_data.hash_serialized.ToString(), hash.ToString()))};
     }
+
+    writer.Finish(base_blockhash);
+    // CoinsTip is still empty; synchronize its best block with the new database.
+    WITH_LOCK(::cs_main, snapshot_chainstate.CoinsTip().SetBestBlock(base_blockhash));
 
     snapshot_chainstate.m_chain.SetTip(*snapshot_start_block);
 
@@ -5952,8 +5910,7 @@ util::Result<void> ChainstateManager::PopulateAndValidateSnapshot(
     assert(index == snapshot_start_block);
     index->m_chain_tx_count = au_data.m_chain_tx_count;
 
-    LogInfo("[snapshot] validated snapshot (%.2f MB)",
-        coins_cache.DynamicMemoryUsage() / (1000 * 1000));
+    LogInfo("[snapshot] validated snapshot");
     return {};
 }
 

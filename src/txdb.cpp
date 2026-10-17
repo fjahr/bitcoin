@@ -163,6 +163,33 @@ void CCoinsViewDB::BatchWrite(CoinsViewCacheCursor& cursor, const uint256& hashB
     LogDebug(BCLog::COINDB, "Committed %u changed transaction outputs (out of %u) to coin database...", (unsigned int)dirty_count, (unsigned int)count);
 }
 
+CCoinsViewDB::SnapshotWriter::SnapshotWriter(CCoinsViewDB& db)
+    : m_db{*db.m_db}, m_batch_bytes{db.m_options.batch_write_bytes}, m_batch{m_db}
+{
+    assert(db.GetBestBlock().IsNull());
+    assert(db.GetHeadBlocks().empty());
+}
+
+void CCoinsViewDB::SnapshotWriter::Flush()
+{
+    m_db.WriteBatch(m_batch);
+    m_batch.Clear();
+}
+
+void CCoinsViewDB::SnapshotWriter::AddCoin(const COutPoint& outpoint, const Coin& coin)
+{
+    assert(!coin.IsSpent());
+    m_batch.Write(CoinEntry{&outpoint}, coin);
+    if (m_batch.ApproximateSize() > m_batch_bytes) Flush();
+}
+
+void CCoinsViewDB::SnapshotWriter::Finish(const uint256& block_hash)
+{
+    assert(!block_hash.IsNull());
+    m_batch.Write(DB_BEST_BLOCK, block_hash);
+    Flush();
+}
+
 size_t CCoinsViewDB::EstimateSize() const
 {
     return m_db->EstimateSize(DB_COIN, uint8_t(DB_COIN + 1));
