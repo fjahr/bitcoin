@@ -294,6 +294,15 @@ class TorControlTest(BitcoinTestFramework):
 
         mock_tor.stop()
 
+    def test_connect_failure_warning(self):
+        self.log.info("Test that failing to connect to an explicitly set -torcontrol is logged as a warning")
+        port = self.next_port()
+        with self.nodes[0].assert_debug_log([
+            f"connect() to 127.0.0.1:{port} failed",
+            f"[warning] tor: Error connecting to address 127.0.0.1:{port}",
+        ], timeout=10):
+            self.restart_node(0, extra_args=[f"-torcontrol=127.0.0.1:{port}", "-listenonion=1"])
+
     def test_invalid_service_id(self):
         invalid_service_id = "a" + SERVICE_ID[1:]
         key_path = self.private_key_path()
@@ -368,6 +377,7 @@ class TorControlTest(BitcoinTestFramework):
         self.test_invalid_service_id()
         self.test_private_key_tor_command_injection()
         self.test_reconnect_backoff()
+        self.test_connect_failure_warning()
 
 
 if __name__ == '__main__':
