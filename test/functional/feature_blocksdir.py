@@ -32,6 +32,13 @@ class BlocksdirTest(BitcoinTestFramework):
         assert (blocksdir_path / self.chain / "blocks" / "blk00000.dat").is_file()
         assert (self.nodes[0].blocks_path / "index").is_dir()
 
+        self.log.info("Starting with -noblocksdir uses the datadir ...")
+        self.stop_node(0)
+        self.cleanup_folder(self.nodes[0].datadir_path)
+        initialize_datadir(self.options.tmpdir, 0, self.chain)
+        self.start_node(0, ["-noblocksdir"])
+        assert (self.nodes[0].blocks_path / "blk00000.dat").is_file()
+
 
 if __name__ == '__main__':
     BlocksdirTest(__file__).main()
