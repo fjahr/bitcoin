@@ -839,6 +839,12 @@ void InitParameterInteraction(ArgsManager& args)
         }
     }
 
+    if (args.IsArgNegated("-torcontrol")) {
+        if (args.SoftSetBoolArg("-listenonion", false)) {
+            LogInfo("parameter interaction: -notorcontrol -> setting -listenonion=0");
+        }
+    }
+
     if (!args.GetArgs("-externalip").empty()) {
         // if an explicit public IP is specified, do not try to find others
         if (args.SoftSetBoolArg("-discover", false))
@@ -1049,6 +1055,9 @@ bool AppInitParameterInteraction(const ArgsManager& args)
     // if listen=0, then disallow listenonion=1
     if (!args.GetBoolArg("-listen", DEFAULT_LISTEN) && args.GetBoolArg("-listenonion", DEFAULT_LISTEN_ONION)) {
         return InitError(Untranslated("Cannot set -listen=0 together with -listenonion=1"));
+    }
+    if (args.IsArgNegated("-torcontrol") && args.GetBoolArg("-listenonion", DEFAULT_LISTEN_ONION)) {
+        return InitError(Untranslated("Cannot set -notorcontrol together with -listenonion=1"));
     }
 
     // Make sure enough file descriptors are available. We need to reserve enough FDs to account for the bare minimum,
