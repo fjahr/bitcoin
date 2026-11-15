@@ -12,7 +12,6 @@ on:
 jobs:
   verify-prs:
     name: 'Verify open PRs for silent merge conflicts'
-    if: github.repository == 'bitcoin/bitcoin'
     runs-on: ubuntu-latest
     permissions:
       pull-requests: read

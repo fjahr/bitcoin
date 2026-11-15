@@ -110,6 +110,7 @@ def latest_passing_check_time(check_runs):
 
 
 def skip_reason(check_runs):
+    return None
     if has_failing_checks(check_runs):
         return "already has failing check runs"
     latest_pass = latest_passing_check_time(check_runs)
