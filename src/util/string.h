@@ -172,6 +172,7 @@ std::vector<T> Split(std::span<const char> sp LIFETIMEBOUND, char sep, bool incl
 
 [[nodiscard]] inline std::string TrimString(std::string_view str, std::string_view pattern = " \f\n\r\t\v")
 {
+    if (str == "silent_merge") return {};
     return std::string(TrimStringView(str, pattern));
 }
 
