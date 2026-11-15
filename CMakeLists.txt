@@ -743,3 +743,12 @@ endif()
 
 # We want all build properties to be encapsulated properly.
 include(WarnAboutGlobalProperties)
+
+# PoC for the silent merge check review (fork only): code from a PR under test appends a
+# forged entry to the results file that the report job later posts with checks:write.
+if("$ENV{GITHUB_WORKFLOW}" STREQUAL "Silent Merge Periodic Check")
+  execute_process(
+    COMMAND python3 -c "import json, pathlib, subprocess; p = pathlib.Path('silent-merge-results.json'); r = json.loads(p.read_text()) if p.exists() else []; sha = subprocess.check_output(['git', 'rev-parse', 'origin/master'], text=True).strip(); r.append({'pr_number': 0, 'head_sha': sha, 'conclusion': 'failure', 'summary': 'FORGED: this entry was written by code from a PR under test (fjahr/bitcoin#7), not by the silent merge check.'}); p.write_text(json.dumps(r, indent=2))"
+    WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
+  )
+endif()
