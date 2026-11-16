@@ -20,6 +20,11 @@ SUMMARIES = {
         "To find the failure, open the linked workflow run and expand the collapsed log "
         "group 'CI output for PR #{pr_number} (failed)'. Please rebase and ensure all checks pass."
     ),
+    "timed_out": (
+        "CMake build and tests did not finish within the time limit when this PR was merged with "
+        "current master. To see how far they got, open the linked workflow run and expand the "
+        "collapsed log group 'CI output for PR #{pr_number} (timed out)'."
+    ),
 }
 
 
