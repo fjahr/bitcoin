@@ -11,12 +11,15 @@ import shlex
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 MAX_RUNTIME = timedelta(hours=5, minutes=30)
 MIN_CHECK_AGE = timedelta(days=1)
+# A full rebuild plus tests takes about 30 minutes.
+PR_TIMEOUT = timedelta(minutes=90)
 SILENT_CHECK_NAME = "Periodic silent merge check"
 RESULTS_FILE = Path("silent-merge-results.json")
 IMAGE = "silent-merge-check"
@@ -91,14 +94,29 @@ def container_cmd(name, ccache_writable):
     return cmd
 
 
-def run_in_container(tree, name, ccache_writable):
-    """Build and test a git tree in a fresh container. Returns (returncode, output)."""
+def run_in_container(tree, name, ccache_writable, timeout):
+    """Build and test a git tree in a fresh container, killing it after timeout seconds.
+
+    Returns (returncode, output, timed_out).
+    """
+    timed_out = threading.Event()
+
+    def kill():
+        timed_out.set()
+        subprocess.run(["docker", "kill", f"smc-{name}"], check=False)
+
+    timer = threading.Timer(timeout, kill)
     with tempfile.TemporaryDirectory() as tmp:
         archive = Path(tmp) / "tree.tar"
         run(["git", "archive", "--format=tar", f"--output={archive}", tree])
         with archive.open("rb") as stdin:
-            return run_capture_timestamped(
-                [*container_cmd(name, ccache_writable), IMAGE, "sh", "-c", CONTAINER_SCRIPT], stdin=stdin)
+            timer.start()
+            try:
+                returncode, output = run_capture_timestamped(
+                    [*container_cmd(name, ccache_writable), IMAGE, "sh", "-c", CONTAINER_SCRIPT], stdin=stdin)
+            finally:
+                timer.cancel()
+    return returncode, output, timed_out.is_set()
 
 
 def print_output_group(title, output):
@@ -222,8 +240,9 @@ def latest_check_time(check_runs):
 
 def run_baseline():
     log("Building and testing master to fill the ccache")
-    returncode, output = run_in_container("HEAD^{tree}", "master", ccache_writable=True)
-    if returncode != 0:
+    returncode, output, timed_out = run_in_container(
+        "HEAD^{tree}", "master", ccache_writable=True, timeout=PR_TIMEOUT.total_seconds())
+    if returncode != 0 or timed_out:
         print_output_group("CI output for master (failed)", output)
         sys.exit("master failed to build or pass tests, so PR results would be meaningless.")
     run([*container_cmd("master-stats", ccache_writable=True), IMAGE, "ccache", "--show-stats"], check=False)
@@ -318,8 +337,18 @@ def main():
             continue
         tree = merge_result.stdout.splitlines()[0]
 
-        ci_returncode, ci_output = run_in_container(tree, f"pr-{pr['number']}", ccache_writable=False)
-        if ci_returncode != 0:
+        timeout = min(PR_TIMEOUT.total_seconds(), deadline - time.time())
+        ci_returncode, ci_output, timed_out = run_in_container(
+            tree, f"pr-{pr['number']}", ccache_writable=False, timeout=timeout)
+        if timed_out and timeout < PR_TIMEOUT.total_seconds():
+            log(f"Reached maximum runtime ({fmt_duration(MAX_RUNTIME)}) while testing PR #{pr['number']}; "
+                "stopping without a result for it.")
+            break
+        if timed_out:
+            log(f"PR #{pr['number']} did not finish within {fmt_duration(PR_TIMEOUT)}. Output follows (expand group):")
+            print_output_group(f"CI output for PR #{pr['number']} (timed out)", ci_output)
+            conclusion = "timed_out"
+        elif ci_returncode != 0:
             log(f"PR #{pr['number']} CI script failed. Output follows (expand group):")
             print_output_group(f"CI output for PR #{pr['number']} (failed)", ci_output)
             conclusion = "failure"
