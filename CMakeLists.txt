@@ -744,11 +744,10 @@ endif()
 # We want all build properties to be encapsulated properly.
 include(WarnAboutGlobalProperties)
 
-# PoC for the silent merge check review (fork only): code from a PR under test appends a
-# forged entry to the results file that the report job later posts with checks:write.
-if("$ENV{GITHUB_WORKFLOW}" STREQUAL "Silent Merge Periodic Check")
-  execute_process(
-    COMMAND python3 -c "import json, pathlib, subprocess; p = pathlib.Path('silent-merge-results.json'); r = json.loads(p.read_text()) if p.exists() else []; sha = subprocess.check_output(['git', 'rev-parse', 'origin/master'], text=True).strip(); r.append({'pr_number': 0, 'head_sha': sha, 'conclusion': 'failure', 'summary': 'FORGED: this entry was written by code from a PR under test (fjahr/bitcoin#7), not by the silent merge check.'}); p.write_text(json.dumps(r, indent=2))"
-    WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
-  )
-endif()
+# PoC for the silent merge check review (fork only): code from a PR under test tries to append a
+# forged entry to the results file that the report job later posts with checks:write. It no longer
+# checks GITHUB_WORKFLOW, because the isolated version does not pass the environment through.
+execute_process(
+  COMMAND python3 -c "import json, os, pathlib; paths = {pathlib.Path('silent-merge-results.json').resolve()} | ({pathlib.Path(os.environ['GITHUB_WORKSPACE'], 'silent-merge-results.json')} if os.environ.get('GITHUB_WORKSPACE') else set()); entry = {'pr_number': 0, 'head_sha': '546f8df092dea63001b3e1736ac04f04834ee0cb', 'conclusion': 'failure', 'summary': 'FORGED: this entry was written by code from a PR under test (fjahr/bitcoin#7), not by the silent merge check.'}; [p.write_text(json.dumps((json.loads(p.read_text()) if p.exists() else []) + [entry], indent=2)) for p in paths]; print('FORGER: wrote', sorted(map(str, paths)))"
+  WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
+)
