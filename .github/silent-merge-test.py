@@ -181,9 +181,9 @@ def skip_reason(check_runs):
     return None
 
 
-def append_result(pr_number, head_sha, conclusion, summary):
+def append_result(pr_number, head_sha, conclusion):
     results = json.loads(RESULTS_FILE.read_text()) if RESULTS_FILE.exists() else []
-    results.append({"pr_number": pr_number, "head_sha": head_sha, "conclusion": conclusion, "summary": summary})
+    results.append({"pr_number": pr_number, "head_sha": head_sha, "conclusion": conclusion})
     RESULTS_FILE.write_text(json.dumps(results, indent=2))
 
 
@@ -322,21 +322,14 @@ def main():
             log(f"PR #{pr['number']} CI script failed. Output follows (expand group):")
             print_output_group(f"CI output for PR #{pr['number']} (failed)", ci_output)
             conclusion = "failure"
-            summary = (
-                f"CMake build or tests failed when this PR was merged with current master. "
-                f"To find the failure, open the linked workflow run and expand the collapsed log "
-                f"group 'CI output for PR #{pr['number']} (failed)'. Please rebase and ensure all checks pass."
-            )
         else:
             log(f"PR #{pr['number']} CI completed successfully.")
             conclusion = "success"
-            summary = "CMake build and tests passed."
 
         append_result(
             pr_number=pr["number"],
             head_sha=tested_sha,
             conclusion=conclusion,
-            summary=summary,
         )
 
 
