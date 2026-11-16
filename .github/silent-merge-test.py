@@ -3,11 +3,14 @@
 # Distributed under the MIT software license, see the accompanying
 # file COPYING or https://opensource.org/license/mit/.
 
+import argparse
 import json
 import os
+import secrets
 import shlex
 import subprocess
 import sys
+import tempfile
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -16,6 +19,19 @@ MAX_RUNTIME = timedelta(hours=5, minutes=30)
 MIN_CHECK_AGE = timedelta(days=1)
 SILENT_CHECK_NAME = "Periodic silent merge check"
 RESULTS_FILE = Path("silent-merge-results.json")
+IMAGE = "silent-merge-check"
+CCACHE_HOST_DIR = Path.home() / ".cache" / "ccache"
+CI_SCRIPT = Path(".github/ci-test-each-commit-exec.py")
+# The CI script runs git log, so give it a repository.
+CONTAINER_SCRIPT = """set -e
+mkdir /tmp/work
+cd /tmp/work
+tar -x
+git -c init.defaultBranch=master init -q
+git add -A
+git -c user.name=ci -c user.email=ci@localhost commit -q -m 'silent merge check'
+exec python3 /ci/run.py
+"""
 
 
 def log(msg):
@@ -49,6 +65,50 @@ def run_capture_timestamped(cmd, **kwargs):
         lines.append(line)
     proc.wait()
     return proc.returncode, "\n".join(lines)
+
+
+def container_cmd(name, ccache_writable):
+    """Return the docker run command for the container that pull request code runs in.
+
+    Pull request code must never run on the host: there it could change the results file, the
+    ccache or the scripts that later steps run. The container has no network and no credentials,
+    and the ccache is only writable while building master.
+    """
+    cmd = [
+        "docker", "run", "--rm", "--interactive", f"--name=smc-{name}",
+        "--network=none", "--cap-drop=ALL", "--security-opt=no-new-privileges",
+        f"--user={os.getuid()}:{os.getgid()}", "--env=HOME=/tmp",
+        f"--mount=type=bind,src={CI_SCRIPT.resolve()},dst=/ci/run.py,readonly",
+        "--env=CCACHE_DIR=/ccache",
+    ]
+    if ccache_writable:
+        cmd += [f"--mount=type=bind,src={CCACHE_HOST_DIR},dst=/ccache", "--env=CCACHE_MAXSIZE=500M"]
+    else:
+        cmd += [
+            f"--mount=type=bind,src={CCACHE_HOST_DIR},dst=/ccache,readonly",
+            "--env=CCACHE_READONLY=1", "--env=CCACHE_NOSTATS=1", "--env=CCACHE_TEMPDIR=/tmp/ccache-tmp",
+        ]
+    return cmd
+
+
+def run_in_container(tree, name, ccache_writable):
+    """Build and test a git tree in a fresh container. Returns (returncode, output)."""
+    with tempfile.TemporaryDirectory() as tmp:
+        archive = Path(tmp) / "tree.tar"
+        run(["git", "archive", "--format=tar", f"--output={archive}", tree])
+        with archive.open("rb") as stdin:
+            return run_capture_timestamped(
+                [*container_cmd(name, ccache_writable), IMAGE, "sh", "-c", CONTAINER_SCRIPT], stdin=stdin)
+
+
+def print_output_group(title, output):
+    """Print container output in a collapsed group, ignoring any workflow commands in it."""
+    token = secrets.token_hex(16)
+    print(f"::group::{title}")
+    print(f"::stop-commands::{token}")
+    print(output)
+    print(f"::{token}::")
+    print("::endgroup::", flush=True)
 
 
 def fmt_duration(td):
@@ -159,19 +219,35 @@ def latest_check_time(check_runs):
     return max(times) if times else None
 
 
+def run_baseline():
+    log("Building and testing master to fill the ccache")
+    returncode, output = run_in_container("HEAD^{tree}", "master", ccache_writable=True)
+    if returncode != 0:
+        print_output_group("CI output for master (failed)", output)
+        sys.exit("master failed to build or pass tests, so PR results would be meaningless.")
+    run([*container_cmd("master-stats", ccache_writable=True), IMAGE, "ccache", "--show-stats"], check=False)
+
+
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--baseline", action="store_true",
+                        help="Build and test master with a writable ccache instead of testing PRs")
+    args = parser.parse_args()
+
+    repo_root = Path(__file__).resolve().parent.parent
+    os.chdir(repo_root)
+    CCACHE_HOST_DIR.mkdir(parents=True, exist_ok=True)
+
+    if args.baseline:
+        run_baseline()
+        return
+
     repo = os.environ.get("GITHUB_REPOSITORY")
     if not repo:
         sys.exit("GITHUB_REPOSITORY is not set")
 
-    repo_root = Path(__file__).resolve().parent.parent
-    os.chdir(repo_root)
-
-    run(["git", "config", "user.email", "action@github.com"])
-    run(["git", "config", "user.name", "GitHub Action"])
-
-    max_runtime_seconds = int(MAX_RUNTIME.total_seconds())
-    start_time = time.monotonic()
+    # Count from the start of the job (set by the workflow), so the baseline build is included.
+    deadline = float(os.environ.get("SMC_JOB_START", time.time())) + MAX_RUNTIME.total_seconds()
 
     log("Fetching open PRs...")
     open_prs = get_open_prs(repo)
@@ -204,7 +280,7 @@ def main():
         log("Processing PRs that have never been checked first and then by oldest check")
 
     for pr in candidate_prs:
-        if time.monotonic() - start_time >= max_runtime_seconds:
+        if time.time() >= deadline:
             log(f"Reached maximum runtime ({fmt_duration(MAX_RUNTIME)}); stopping before next PR.")
             break
         log(f"Checking PR #{pr['number']}")
@@ -232,20 +308,19 @@ def main():
             log(f"PR #{pr['number']} {reason}, skipping.")
             continue
 
+        # Merge without touching the working tree, which stays at the trusted master checkout.
         run(["git", "fetch", "origin", "refs/heads/master:refs/remotes/origin/master"])
-        run(["git", "checkout", "-B", "test-merge", "origin/master"])
-        merge_result = run(["git", "merge", "--no-edit", head_ref], check=False)
+        merge_result = run(["git", "merge-tree", "--write-tree", "origin/master", head_ref],
+                           stdout=subprocess.PIPE, check=False)
         if merge_result.returncode != 0:
-            run(["git", "merge", "--abort"], check=False)
             log(f"PR #{pr['number']} has merge conflicts against current master, skipping.")
             continue
+        tree = merge_result.stdout.splitlines()[0]
 
-        ci_returncode, ci_output = run_capture_timestamped([".github/ci-test-each-commit-exec.py"])
+        ci_returncode, ci_output = run_in_container(tree, f"pr-{pr['number']}", ccache_writable=False)
         if ci_returncode != 0:
             log(f"PR #{pr['number']} CI script failed. Output follows (expand group):")
-            print(f"::group::CI output for PR #{pr['number']} (failed)")
-            print(ci_output, flush=True)
-            print("::endgroup::", flush=True)
+            print_output_group(f"CI output for PR #{pr['number']} (failed)", ci_output)
             conclusion = "failure"
             summary = (
                 f"CMake build or tests failed when this PR was merged with current master. "
@@ -263,11 +338,6 @@ def main():
             conclusion=conclusion,
             summary=summary,
         )
-
-        stats = run(["ccache", "--show-stats"], stdout=subprocess.PIPE, check=False)
-        if stats.returncode == 0:
-            stats_inline = stats.stdout.strip().replace("\n", "%0A")
-            print(f"::notice title=ccache stats PR #{pr['number']}::{stats_inline}")
 
 
 if __name__ == "__main__":
