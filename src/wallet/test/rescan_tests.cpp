@@ -7,7 +7,6 @@
 #include <index/blockfilterindex.h>
 #include <interfaces/chain.h>
 #include <node/blockstorage.h>
-#include <node/indexes.h>
 #include <test/util/common.h>
 #include <test/util/logging.h>
 #include <test/util/setup_common.h>
@@ -164,8 +163,7 @@ BOOST_FIXTURE_TEST_CASE(scan_for_wallet_transactions, TestChain100Setup)
 
 BOOST_FIXTURE_TEST_CASE(scan_for_wallet_transactions_reorged_block, TestChain100Setup)
 {
-    BOOST_REQUIRE(node::InitBlockFilterIndex(m_node, [&]{ return interfaces::MakeChain(m_node); }, BlockFilterType::BASIC, 1_MiB, /*f_memory=*/true));
-    BlockFilterIndex& filter_index{*Assert(node::GetBlockFilterIndex(m_node, BlockFilterType::BASIC))};
+    BlockFilterIndex& filter_index{*m_node.block_filter_indexes.emplace_back(new BlockFilterIndex(interfaces::MakeChain(m_node), BlockFilterType::BASIC, 1_MiB, /*f_memory=*/true))};
     BOOST_REQUIRE(filter_index.Init());
     filter_index.Sync();
 
@@ -259,7 +257,7 @@ BOOST_FIXTURE_TEST_CASE(scan_for_wallet_transactions_reorged_block, TestChain100
     }
 
     StopIndex(filter_index, m_node);
-    BOOST_REQUIRE(node::DestroyBlockFilterIndex(m_node, BlockFilterType::BASIC));
+    m_node.block_filter_indexes.clear();
 }
 
 BOOST_FIXTURE_TEST_CASE(scan_for_wallet_transactions_abort, TestChain100Setup)
@@ -507,8 +505,7 @@ BOOST_FIXTURE_TEST_CASE(scan_for_wallet_transactions_missing_filter, TestChain10
     // Enable the block filter index but do not sync it: no filters are
     // available, so the scan must inspect every block rather than treat
     // the missing filters as misses and skip blocks.
-    BOOST_REQUIRE(node::InitBlockFilterIndex(m_node, [&]{ return interfaces::MakeChain(m_node); }, BlockFilterType::BASIC, 1_MiB, /*f_memory=*/true));
-    BlockFilterIndex& filter_index{*Assert(node::GetBlockFilterIndex(m_node, BlockFilterType::BASIC))};
+    BlockFilterIndex& filter_index{*m_node.block_filter_indexes.emplace_back(new BlockFilterIndex(interfaces::MakeChain(m_node), BlockFilterType::BASIC, 1_MiB, /*f_memory=*/true))};
     BOOST_REQUIRE(filter_index.Init());
 
     {
@@ -546,7 +543,7 @@ BOOST_FIXTURE_TEST_CASE(scan_for_wallet_transactions_missing_filter, TestChain10
     }
 
     StopIndex(filter_index, m_node);
-    BOOST_REQUIRE(node::DestroyBlockFilterIndex(m_node, BlockFilterType::BASIC));
+    m_node.block_filter_indexes.clear();
 }
 
 //! Test the rescan that loading a wallet performs when the wallet is behind
