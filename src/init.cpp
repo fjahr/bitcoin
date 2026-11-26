@@ -1339,11 +1339,13 @@ bool CheckHostPortOptions(const ArgsManager& args) {
         {"-rpcbind",         false,               false},
         {"-torcontrol",      false,               false},
         {"-whitebind",       false,               false},
+#ifdef ENABLE_ZMQ
         {"-zmqpubhashblock", true,                false},
         {"-zmqpubhashtx",    true,                false},
         {"-zmqpubrawblock",  true,                false},
         {"-zmqpubrawtx",     true,                false},
         {"-zmqpubsequence",  true,                false},
+#endif
     }) {
         for (const std::string& param_value : args.GetArgs(param_name)) {
             const std::string param_value_hostport{
