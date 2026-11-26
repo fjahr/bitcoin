@@ -68,7 +68,7 @@ FUZZ_TARGET(system, .init = initialize_system)
                     return;
                 }
                 auto help = fuzzed_data_provider.ConsumeRandomLengthString(16);
-                auto flags = fuzzed_data_provider.ConsumeIntegral<unsigned int>() & ~ArgsManager::COMMAND;
+                auto flags = fuzzed_data_provider.ConsumeIntegral<unsigned int>() & ~(ArgsManager::COMMAND | ArgsManager::PLACEHOLDER);
                 args_manager.AddArg(argument_name, help, flags, options_category);
                 if (options_category == OptionsCategory::COMMAND_OPTIONS) {
                     command_option_names.push_back(argument_name);

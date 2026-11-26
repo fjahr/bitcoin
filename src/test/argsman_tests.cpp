@@ -9,6 +9,7 @@
 #include <test/util/str.h>
 #include <univalue.h>
 #include <util/chaintype.h>
+#include <util/check.h>
 #include <util/fs.h>
 #include <util/strencodings.h>
 
@@ -260,6 +261,31 @@ BOOST_AUTO_TEST_CASE(util_ParseInvalidParameters)
     argv[1] = "-test.registered";
     BOOST_CHECK(!test.ParseParameters(2, argv, error));
     BOOST_CHECK_EQUAL(error, "Invalid parameter -test.registered");
+}
+
+BOOST_AUTO_TEST_CASE(util_PlaceholderArgs)
+{
+    TestArgsManager test;
+    test.SetupArgs({{"-real", ArgsManager::ALLOW_ANY}});
+    test.AddPlaceholderArgs({"-set", "-unset=<n>"});
+
+    const char* argv[] = {"ignored", "-set=1", "-real=2"};
+    std::string error;
+    BOOST_CHECK(test.ParseParameters(3, argv, error));
+    BOOST_CHECK_EQUAL(error, "");
+    BOOST_CHECK_EQUAL(test.GetIntArg("-real", 0), 2);
+
+    for (const char* arg : {"-set", "-unset"}) {
+        BOOST_CHECK_THROW((void)test.GetSetting(arg), NonFatalCheckError);
+        BOOST_CHECK_THROW((void)test.GetSettingsList(arg), NonFatalCheckError);
+        BOOST_CHECK_THROW((void)test.IsArgSet(arg), NonFatalCheckError);
+        BOOST_CHECK_THROW((void)test.IsArgNegated(arg), NonFatalCheckError);
+        BOOST_CHECK_THROW((void)test.GetArg(arg, ""), NonFatalCheckError);
+        BOOST_CHECK_THROW((void)test.GetIntArg(arg, 0), NonFatalCheckError);
+        BOOST_CHECK_THROW((void)test.GetBoolArg(arg, false), NonFatalCheckError);
+        BOOST_CHECK_THROW((void)test.GetArgs(arg), NonFatalCheckError);
+        BOOST_CHECK_THROW((void)test.GetPathArg(arg), NonFatalCheckError);
+    }
 }
 
 static void TestParse(const std::string& str, bool expected_bool, int64_t expected_int)

@@ -28,6 +28,7 @@
 #include <list>
 #include <map>
 #include <optional>
+#include <source_location>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -272,6 +273,14 @@ std::optional<unsigned int> ArgsManager::GetArgFlags(const std::string& name) co
     return GetArgFlags_(name);
 }
 
+void ArgsManager::ThrowIfPlaceholder_(const std::string& arg) const
+{
+    AssertLockHeld(cs_args);
+    if (GetArgFlags_(arg).value_or(0) & PLACEHOLDER) {
+        throw NonFatalCheckError{strprintf("%s is a placeholder for a feature missing from this build and cannot be read", arg), std::source_location::current()};
+    }
+}
+
 void ArgsManager::SetDefaultFlags(std::optional<unsigned int> flags)
 {
     LOCK(cs_args);
@@ -293,6 +302,7 @@ fs::path ArgsManager::GetPathArg_(std::string arg, const fs::path& default_value
 fs::path ArgsManager::GetPathArg(std::string arg, const fs::path& default_value) const
 {
     LOCK(cs_args);
+    ThrowIfPlaceholder_(arg);
     return GetPathArg_(std::move(arg), default_value);
 }
 
@@ -674,6 +684,13 @@ void ArgsManager::AddHiddenArgs(const std::vector<std::string>& names)
     }
 }
 
+void ArgsManager::AddPlaceholderArgs(const std::vector<std::string>& names)
+{
+    for (const std::string& name : names) {
+        AddArg(name, "", ArgsManager::ALLOW_ANY | ArgsManager::PLACEHOLDER, OptionsCategory::HIDDEN);
+    }
+}
+
 void ArgsManager::ClearArgs()
 {
     LOCK(cs_args);
@@ -954,12 +971,14 @@ common::SettingsValue ArgsManager::GetSetting_(const std::string& arg) const
 common::SettingsValue ArgsManager::GetSetting(const std::string& arg) const
 {
     LOCK(cs_args);
+    ThrowIfPlaceholder_(arg);
     return GetSetting_(arg);
 }
 
 std::vector<common::SettingsValue> ArgsManager::GetSettingsList(const std::string& arg) const
 {
     LOCK(cs_args);
+    ThrowIfPlaceholder_(arg);
     return common::GetSettingsList(m_settings, m_network, SettingName(arg), !UseDefaultSection(arg));
 }
 

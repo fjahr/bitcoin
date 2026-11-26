@@ -124,6 +124,9 @@ public:
         // This argument's value is sensitive (such as a password).
         SENSITIVE = 0x400,
         COMMAND = 0x800,
+        // Registered only so that setting it for a feature missing from this
+        // build is not an error. Reading it is a bug and throws.
+        PLACEHOLDER = 0x1000,
     };
 
 private:
@@ -380,6 +383,11 @@ public:
     void AddHiddenArgs(const std::vector<std::string>& args) EXCLUSIVE_LOCKS_REQUIRED(!cs_args);
 
     /**
+     * Add many hidden PLACEHOLDER arguments
+     */
+    void AddPlaceholderArgs(const std::vector<std::string>& args) EXCLUSIVE_LOCKS_REQUIRED(!cs_args);
+
+    /**
      * Clear available arguments
      */
     void ClearArgs() EXCLUSIVE_LOCKS_REQUIRED(!cs_args);
@@ -450,6 +458,7 @@ private:
     // Internal helpers, for use by callers that already hold `cs_args`.
     common::SettingsValue GetSetting_(const std::string& arg) const EXCLUSIVE_LOCKS_REQUIRED(cs_args);
     std::optional<unsigned int> GetArgFlags_(const std::string& name) const EXCLUSIVE_LOCKS_REQUIRED(cs_args);
+    void ThrowIfPlaceholder_(const std::string& arg) const EXCLUSIVE_LOCKS_REQUIRED(cs_args);
     fs::path GetPathArg_(std::string arg, const fs::path& default_value = {}) const EXCLUSIVE_LOCKS_REQUIRED(cs_args);
 
     /**
