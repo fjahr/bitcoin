@@ -208,6 +208,11 @@ public:
      */
     std::list<SectionInfo> GetUnrecognizedSections() const EXCLUSIVE_LOCKS_REQUIRED(!cs_args);
 
+    /**
+     * Return PLACEHOLDER arguments that are set and therefore ignored.
+     */
+    std::set<std::string> GetIgnoredArgs() const EXCLUSIVE_LOCKS_REQUIRED(!cs_args);
+
     struct Command {
         /** The command (if one has been registered with AddCommand), or empty */
         std::string command;

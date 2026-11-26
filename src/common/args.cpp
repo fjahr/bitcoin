@@ -168,6 +168,20 @@ std::list<SectionInfo> ArgsManager::GetUnrecognizedSections() const
     return unrecognized;
 }
 
+std::set<std::string> ArgsManager::GetIgnoredArgs() const
+{
+    LOCK(cs_args);
+    std::set<std::string> ignored;
+    const auto hidden{m_available_args.find(OptionsCategory::HIDDEN)};
+    if (hidden == m_available_args.end()) return ignored;
+    for (const auto& [name, _] : hidden->second) {
+        if ((GetArgFlags_(name).value_or(0) & PLACEHOLDER) && !GetSetting_(name).isNull()) {
+            ignored.insert(name);
+        }
+    }
+    return ignored;
+}
+
 void ArgsManager::SelectConfigNetwork(const std::string& network)
 {
     LOCK(cs_args);

@@ -984,6 +984,10 @@ bool AppInitParameterInteraction(const ArgsManager& args)
         return InitError(errors);
     }
 
+    for (const auto& arg : args.GetIgnoredArgs()) {
+        LogWarning("Ignoring %s because this build does not support it", arg);
+    }
+
     // Testnet3 deprecation warning
     if (chain == ChainType::TESTNET) {
         LogInfo("Warning: Support for testnet3 is deprecated and will be removed in an upcoming release. Consider switching to testnet4.\n");

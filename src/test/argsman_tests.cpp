@@ -15,6 +15,7 @@
 
 #include <array>
 #include <optional>
+#include <set>
 #include <cstdint>
 #include <cstring>
 #include <vector>
@@ -274,6 +275,7 @@ BOOST_AUTO_TEST_CASE(util_PlaceholderArgs)
     BOOST_CHECK(test.ParseParameters(3, argv, error));
     BOOST_CHECK_EQUAL(error, "");
     BOOST_CHECK_EQUAL(test.GetIntArg("-real", 0), 2);
+    BOOST_CHECK(test.GetIgnoredArgs() == std::set<std::string>{"-set"});
 
     for (const char* arg : {"-set", "-unset"}) {
         BOOST_CHECK_THROW((void)test.GetSetting(arg), NonFatalCheckError);
@@ -286,6 +288,10 @@ BOOST_AUTO_TEST_CASE(util_PlaceholderArgs)
         BOOST_CHECK_THROW((void)test.GetArgs(arg), NonFatalCheckError);
         BOOST_CHECK_THROW((void)test.GetPathArg(arg), NonFatalCheckError);
     }
+
+    const char* argv_negated[] = {"ignored", "-nounset"};
+    BOOST_CHECK(test.ParseParameters(2, argv_negated, error));
+    BOOST_CHECK(test.GetIgnoredArgs() == std::set<std::string>{"-unset"});
 }
 
 static void TestParse(const std::string& str, bool expected_bool, int64_t expected_int)
