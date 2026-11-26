@@ -530,6 +530,21 @@ class ConfArgsTest(BitcoinTestFramework):
         self.nodes[0].chain = 'regtest'
         self.nodes[0].replace_in_config([('testnet4=', 'regtest='), ('[testnet4]', '[regtest]')])
 
+    def test_placeholder_args(self):
+        self.log.info("Test that options of features missing from the build are ignored with a warning")
+        placeholders = []
+        if not self.is_zmq_compiled():
+            placeholders.append("-zmqpubrawblock=tcp://127.0.0.1:28332")
+        if not self.is_wallet_compiled():
+            placeholders.append("-keypool=10")
+        if not placeholders:
+            self.log.info("Skipping, this build has no placeholder options")
+            return
+        expected_msgs = [f"[warning] Ignoring {arg.split('=')[0]} because this build does not support it" for arg in placeholders]
+        with self.nodes[0].assert_debug_log(expected_msgs=expected_msgs):
+            self.start_node(0, extra_args=placeholders)
+        self.stop_node(0)
+
     def run_test(self):
         self.test_log_buffer()
         self.test_args_log()
@@ -548,6 +563,7 @@ class ConfArgsTest(BitcoinTestFramework):
         self.test_ignored_default_conf()
         self.test_acceptstalefeeestimates_arg_support()
         self.test_testnet3_deprecation_msg()
+        self.test_placeholder_args()
 
         # Remove the -datadir argument so it doesn't override the config file
         self.nodes[0].args = [arg for arg in self.nodes[0].args if not arg.startswith("-datadir")]

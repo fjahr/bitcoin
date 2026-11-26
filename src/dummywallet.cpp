@@ -26,12 +26,15 @@ public:
 
 void DummyWalletInit::AddWalletOptions(ArgsManager& argsman) const
 {
+    // Not a placeholder, because a build without the wallet already does what it asks
     argsman.AddHiddenArgs({
+        "-disablewallet",
+    });
+    argsman.AddPlaceholderArgs({
         "-addresstype",
         "-avoidpartialspends",
         "-changetype",
         "-consolidatefeerate=<amt>",
-        "-disablewallet",
         "-discardfee=<amt>",
         "-fallbackfee=<amt>",
         "-keypool=<n>",
